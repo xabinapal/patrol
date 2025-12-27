@@ -1,0 +1,36 @@
+services:
+  vault:
+    image: hashicorp/vault:1.21.1
+    container_name: patrol-test-vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "root-token"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    command: server -dev
+
+  openbao:
+    image: quay.io/openbao/openbao:2.4.4
+    container_name: patrol-test-openbao
+    ports:
+      - "8210:8200"
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: "root-token"
+      BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      BAO_ADDR: "http://127.0.0.1:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "bao", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    command: server -dev
