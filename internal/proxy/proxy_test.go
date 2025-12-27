@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/xabinapal/patrol/internal/config"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 func TestSetEnv(t *testing.T) {
@@ -44,7 +45,7 @@ func TestSetEnv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := setEnv(tt.env, tt.key, tt.value)
+			result := utils.SetEnv(tt.env, tt.key, tt.value)
 
 			if len(result) != len(tt.expected) {
 				t.Errorf("setEnv() returned %d items, want %d", len(result), len(tt.expected))

@@ -2,11 +2,12 @@
 package token
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // Token represents a Vault authentication token with metadata.
@@ -104,38 +105,10 @@ type VaultTokenLookupData struct {
 	Type             string            `json:"type"`
 }
 
-// extractJSON finds and extracts the first JSON object from mixed output.
-// This handles cases where warnings or other text appear before the JSON.
-func extractJSON(data []byte) []byte {
-	// Find the first '{' which indicates the start of a JSON object
-	start := bytes.IndexByte(data, '{')
-	if start == -1 {
-		// No JSON object found, return original data
-		return data
-	}
-
-	// Find the matching closing '}' by counting braces
-	braceCount := 0
-	for i := start; i < len(data); i++ {
-		if data[i] == '{' {
-			braceCount++
-		} else if data[i] == '}' {
-			braceCount--
-			if braceCount == 0 {
-				// Found the matching closing brace
-				return data[start : i+1]
-			}
-		}
-	}
-
-	// If we didn't find a matching closing brace, return from start to end
-	return data[start:]
-}
-
 // ParseLoginResponse parses a Vault login JSON response and extracts the token.
 func ParseLoginResponse(data []byte) (*Token, error) {
 	// Extract JSON from potentially mixed output (warnings may appear before JSON)
-	jsonData := extractJSON(data)
+	jsonData := utils.ExtractJSON(data)
 
 	var resp VaultLoginResponse
 	if err := json.Unmarshal(jsonData, &resp); err != nil {
@@ -178,7 +151,7 @@ func ParseLoginResponse(data []byte) (*Token, error) {
 // ParseLookupResponse parses a Vault token lookup response.
 func ParseLookupResponse(data []byte) (*VaultTokenLookupData, error) {
 	// Extract JSON from potentially mixed output (warnings may appear before JSON)
-	jsonData := extractJSON(data)
+	jsonData := utils.ExtractJSON(data)
 
 	var resp VaultTokenLookupResponse
 	if err := json.Unmarshal(jsonData, &resp); err != nil {

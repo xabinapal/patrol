@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 func TestHealthStatus(t *testing.T) {
@@ -180,8 +182,8 @@ func TestFormatUptime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := formatUptime(tt.duration); got != tt.want {
-				t.Errorf("formatUptime() = %q, want %q", got, tt.want)
+			if got := utils.FormatUptime(tt.duration); got != tt.want {
+				t.Errorf("FormatUptime() = %q, want %q", got, tt.want)
 			}
 		})
 	}

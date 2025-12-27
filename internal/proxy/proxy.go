@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/xabinapal/patrol/internal/config"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // Executor handles proxying commands to the Vault/OpenBao CLI.
@@ -272,70 +273,48 @@ func (e *Executor) buildEnvironment() []string {
 	// Start with the current environment
 	env := os.Environ()
 
-	// Add any custom environment variables (using setEnv to properly override)
+	// Add any custom environment variables (using SetEnv to properly override)
 	for _, kv := range e.environ {
-		if idx := indexOf(kv, '='); idx > 0 {
+		if idx := utils.IndexOf(kv, '='); idx > 0 {
 			key := kv[:idx]
 			value := kv[idx+1:]
-			env = setEnv(env, key, value)
+			env = utils.SetEnv(env, key, value)
 		}
 	}
 
 	// Set VAULT_ADDR from connection
 	if e.conn.Address != "" {
-		env = setEnv(env, "VAULT_ADDR", e.conn.Address)
+		env = utils.SetEnv(env, "VAULT_ADDR", e.conn.Address)
 	}
 
 	// Set VAULT_TOKEN if we have one
 	if e.token != "" {
-		env = setEnv(env, "VAULT_TOKEN", e.token)
+		env = utils.SetEnv(env, "VAULT_TOKEN", e.token)
 	}
 
 	// Set VAULT_NAMESPACE if specified
 	if e.conn.Namespace != "" {
-		env = setEnv(env, "VAULT_NAMESPACE", e.conn.Namespace)
+		env = utils.SetEnv(env, "VAULT_NAMESPACE", e.conn.Namespace)
 	}
 
 	// Set TLS options
 	if e.conn.TLSSkipVerify {
-		env = setEnv(env, "VAULT_SKIP_VERIFY", "true")
+		env = utils.SetEnv(env, "VAULT_SKIP_VERIFY", "true")
 	}
 	if e.conn.CACert != "" {
-		env = setEnv(env, "VAULT_CACERT", e.conn.CACert)
+		env = utils.SetEnv(env, "VAULT_CACERT", e.conn.CACert)
 	}
 	if e.conn.CAPath != "" {
-		env = setEnv(env, "VAULT_CAPATH", e.conn.CAPath)
+		env = utils.SetEnv(env, "VAULT_CAPATH", e.conn.CAPath)
 	}
 	if e.conn.ClientCert != "" {
-		env = setEnv(env, "VAULT_CLIENT_CERT", e.conn.ClientCert)
+		env = utils.SetEnv(env, "VAULT_CLIENT_CERT", e.conn.ClientCert)
 	}
 	if e.conn.ClientKey != "" {
-		env = setEnv(env, "VAULT_CLIENT_KEY", e.conn.ClientKey)
+		env = utils.SetEnv(env, "VAULT_CLIENT_KEY", e.conn.ClientKey)
 	}
 
 	return env
-}
-
-// setEnv sets or replaces an environment variable in the env slice.
-func setEnv(env []string, key, value string) []string {
-	prefix := key + "="
-	for i, e := range env {
-		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
-			env[i] = prefix + value
-			return env
-		}
-	}
-	return append(env, prefix+value)
-}
-
-// indexOf returns the index of the first occurrence of sep in s, or -1 if not found.
-func indexOf(s string, sep byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == sep {
-			return i
-		}
-	}
-	return -1
 }
 
 // BinaryExists checks if the Vault/OpenBao binary exists.

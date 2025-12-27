@@ -3,6 +3,8 @@ package keyring
 import (
 	"errors"
 	"testing"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 func TestFileStoreBasic(t *testing.T) {
@@ -66,9 +68,9 @@ func TestContainsAny(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := containsAny(tt.s, tt.subs...)
+		result := utils.ContainsAny(tt.s, tt.subs...)
 		if result != tt.expected {
-			t.Errorf("containsAny(%q, %v) = %v, want %v", tt.s, tt.subs, result, tt.expected)
+			t.Errorf("ContainsAny(%q, %v) = %v, want %v", tt.s, tt.subs, result, tt.expected)
 		}
 	}
 }

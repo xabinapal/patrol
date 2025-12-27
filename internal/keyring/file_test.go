@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 func TestFileStore(t *testing.T) {
@@ -124,9 +126,9 @@ func TestSanitizeKey(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := sanitizeKey(tt.input)
+		result := utils.SanitizeKey(tt.input)
 		if result != tt.expected {
-			t.Errorf("sanitizeKey(%q) = %q, want %q", tt.input, result, tt.expected)
+			t.Errorf("SanitizeKey(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
 	}
 }
@@ -142,14 +144,14 @@ func TestSanitizeKeyPathTraversal(t *testing.T) {
 	}
 
 	for _, pattern := range traversalPatterns {
-		result := sanitizeKey(pattern)
+		result := utils.SanitizeKey(pattern)
 		// Result should be a SHA256 hash (64 hex chars)
 		if len(result) != 64 {
-			t.Errorf("sanitizeKey(%q) should return hash, got %q", pattern, result)
+			t.Errorf("SanitizeKey(%q) should return hash, got %q", pattern, result)
 		}
 		// Verify it doesn't contain the original dangerous characters
 		if strings.Contains(result, "/") || strings.Contains(result, "\\") || strings.Contains(result, "..") {
-			t.Errorf("sanitizeKey(%q) = %q still contains dangerous characters", pattern, result)
+			t.Errorf("SanitizeKey(%q) = %q still contains dangerous characters", pattern, result)
 		}
 	}
 }

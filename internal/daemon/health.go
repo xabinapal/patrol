@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // HealthServer provides an HTTP health endpoint.
@@ -147,7 +149,7 @@ func (h *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(h.startTime)
 	status := HealthStatus{
 		Status:        "ok",
-		Uptime:        formatUptime(uptime),
+		Uptime:        utils.FormatUptime(uptime),
 		UptimeSeconds: uptime.Seconds(),
 		LastCheck:     h.lastCheck,
 		TokensManaged: h.tokensManaged,
@@ -194,23 +196,4 @@ func (h *HealthServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fmt.Fprintf(w, "patrol_last_check_timestamp 0\n")
 	}
-}
-
-// formatUptime formats a duration as a human-readable uptime string.
-func formatUptime(d time.Duration) string {
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
-
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
-	}
-	if minutes > 0 {
-		return fmt.Sprintf("%dm %ds", minutes, seconds)
-	}
-	return fmt.Sprintf("%ds", seconds)
 }

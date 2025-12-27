@@ -1,13 +1,13 @@
 package keyring
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // FileStore is a file-based keyring implementation for testing.
@@ -56,7 +56,7 @@ func (f *FileStore) IsAvailable() error {
 // path traversal attacks.
 func (f *FileStore) keyPath(key string) (string, error) {
 	// Sanitize key to be safe for filesystem
-	safeKey := sanitizeKey(key)
+	safeKey := utils.SanitizeKey(key)
 
 	// Build the full path
 	fullPath := filepath.Join(f.dir, safeKey)
@@ -78,30 +78,6 @@ func (f *FileStore) keyPath(key string) (string, error) {
 	}
 
 	return fullPath, nil
-}
-
-// sanitizeKey makes a key safe for use as a filename.
-// For security, keys containing path traversal patterns are hashed.
-func sanitizeKey(key string) string {
-	// Security: If key contains any path traversal patterns, hash it instead
-	if strings.Contains(key, "..") || strings.Contains(key, "/") ||
-		strings.Contains(key, "\\") || strings.Contains(key, string(filepath.Separator)) {
-		h := sha256.Sum256([]byte(key))
-		return hex.EncodeToString(h[:])
-	}
-
-	// Replace any characters that might be problematic in filenames
-	// Note: We explicitly exclude '.' to prevent hidden files and traversal
-	result := make([]byte, len(key))
-	for i, c := range []byte(key) {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '-' {
-			result[i] = c
-		} else {
-			result[i] = '_'
-		}
-	}
-	return string(result)
 }
 
 // Set implements Store.

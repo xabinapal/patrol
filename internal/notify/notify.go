@@ -8,6 +8,7 @@ import (
 	"github.com/gen2brain/beeep"
 
 	"github.com/xabinapal/patrol/internal/config"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // Notifier defines the interface for sending desktop notifications.
@@ -53,7 +54,7 @@ func (n *desktopNotifier) NotifyRenewal(profile string, newTTL time.Duration) er
 	}
 
 	title := "Patrol: Token Renewed"
-	message := fmt.Sprintf("Token for '%s' renewed successfully.\nNew TTL: %s", profile, formatDuration(newTTL))
+	message := fmt.Sprintf("Token for '%s' renewed successfully.\nNew TTL: %s", profile, utils.FormatDuration(newTTL))
 
 	return beeep.Notify(title, message, "")
 }
@@ -68,28 +69,4 @@ func (n *desktopNotifier) NotifyFailure(profile string, err error) error {
 	message := fmt.Sprintf("Failed to renew token for '%s'.\nError: %v", profile, err)
 
 	return beeep.Alert(title, message, "")
-}
-
-// formatDuration formats a duration in a human-readable way.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		hours := int(d.Hours())
-		mins := int(d.Minutes()) % 60
-		if mins > 0 {
-			return fmt.Sprintf("%dh %dm", hours, mins)
-		}
-		return fmt.Sprintf("%dh", hours)
-	}
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	if hours > 0 {
-		return fmt.Sprintf("%dd %dh", days, hours)
-	}
-	return fmt.Sprintf("%dd", days)
 }

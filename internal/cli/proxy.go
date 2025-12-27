@@ -8,6 +8,7 @@ import (
 
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // patrolCommands is the single source of truth for all built-in Patrol commands.
@@ -80,7 +81,7 @@ func (cli *CLI) InitializeForProxy() error {
 	// Check environment variable for profile override
 	if envProfile := os.Getenv("PATROL_PROFILE"); envProfile != "" && cli.profileFlag == "" {
 		// Security: Validate profile name format before using in error messages
-		if !isValidProfileName(envProfile) {
+		if !utils.IsValidProfileName(envProfile) {
 			if cli.verboseFlag {
 				fmt.Fprintf(os.Stderr, "Warning: PATROL_PROFILE contains invalid profile name format\n")
 			}

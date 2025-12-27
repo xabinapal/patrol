@@ -11,6 +11,7 @@ import (
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/keyring"
 	"github.com/xabinapal/patrol/internal/profile"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // CLI holds the application state for the CLI.
@@ -111,7 +112,7 @@ func (cli *CLI) initialize(cmd *cobra.Command) error {
 	// Check environment variable for profile override
 	if envProfile := os.Getenv("PATROL_PROFILE"); envProfile != "" && cli.profileFlag == "" {
 		// Security: Validate profile name format before using in error messages
-		if !isValidProfileName(envProfile) {
+		if !utils.IsValidProfileName(envProfile) {
 			if cli.verboseFlag {
 				fmt.Fprintf(os.Stderr, "Warning: PATROL_PROFILE contains invalid profile name format\n")
 			}
@@ -124,22 +125,6 @@ func (cli *CLI) initialize(cmd *cobra.Command) error {
 	}
 
 	return nil
-}
-
-// isValidProfileName checks if a profile name contains only safe characters.
-// This prevents log injection and other security issues from malicious env vars.
-func isValidProfileName(name string) bool {
-	if name == "" || len(name) > 128 {
-		return false
-	}
-	for _, r := range name {
-		// Allow alphanumeric, hyphen, underscore, and dot
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
-			return false
-		}
-	}
-	return true
 }
 
 // Execute runs the CLI.

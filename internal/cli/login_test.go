@@ -3,6 +3,8 @@ package cli
 import (
 	"reflect"
 	"testing"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 func TestBuildLoginArgs(t *testing.T) {
@@ -332,9 +334,9 @@ func TestExtractTokenFromOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractTokenFromOutput(tt.output)
+			result := utils.ExtractTokenFromOutput(tt.output)
 			if result != tt.expected {
-				t.Errorf("extractTokenFromOutput(%q) = %q, want %q", tt.output, result, tt.expected)
+				t.Errorf("ExtractTokenFromOutput(%q) = %q, want %q", tt.output, result, tt.expected)
 			}
 		})
 	}

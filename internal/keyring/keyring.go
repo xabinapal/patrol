@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 
 	gokeyring "github.com/zalando/go-keyring"
+
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 const (
@@ -85,21 +86,21 @@ func (k *osKeyring) IsAvailable() error {
 
 		// Linux: D-Bus secret service not available
 		if runtime.GOOS == "linux" {
-			if containsAny(errStr, "secret service", "dbus", "org.freedesktop.secrets") {
+			if utils.ContainsAny(errStr, "secret service", "dbus", "org.freedesktop.secrets") {
 				return fmt.Errorf("%w: D-Bus secret service not available - please install and start gnome-keyring, kwallet, or another secret service provider", ErrKeyringUnavailable)
 			}
 		}
 
 		// macOS: Keychain issues
 		if runtime.GOOS == "darwin" {
-			if containsAny(errStr, "keychain", "security") {
+			if utils.ContainsAny(errStr, "keychain", "security") {
 				return fmt.Errorf("%w: macOS Keychain not accessible", ErrKeyringUnavailable)
 			}
 		}
 
 		// Windows: Credential Manager issues
 		if runtime.GOOS == "windows" {
-			if containsAny(errStr, "credential", "wincred") {
+			if utils.ContainsAny(errStr, "credential", "wincred") {
 				return fmt.Errorf("%w: Windows Credential Manager not accessible", ErrKeyringUnavailable)
 			}
 		}
@@ -192,25 +193,14 @@ func wrapKeyringError(err error, context string) error {
 	errStr := err.Error()
 
 	// Check for access denied errors
-	if containsAny(errStr, "denied", "permission", "not allowed", "unauthorized") {
+	if utils.ContainsAny(errStr, "denied", "permission", "not allowed", "unauthorized") {
 		return fmt.Errorf("%w: %s: %v", ErrKeyringAccessDenied, context, err)
 	}
 
 	// Check for unavailability errors
-	if containsAny(errStr, "not found", "no keyring", "unavailable", "secret service") {
+	if utils.ContainsAny(errStr, "not found", "no keyring", "unavailable", "secret service") {
 		return fmt.Errorf("%w: %s: %v", ErrKeyringUnavailable, context, err)
 	}
 
 	return fmt.Errorf("%s: %w", context, err)
-}
-
-// containsAny checks if s contains any of the substrings (case-insensitive).
-func containsAny(s string, substrings ...string) bool {
-	sLower := strings.ToLower(s)
-	for _, sub := range substrings {
-		if strings.Contains(sLower, strings.ToLower(sub)) {
-			return true
-		}
-	}
-	return false
 }

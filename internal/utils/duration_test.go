@@ -119,78 +119,58 @@ func TestFormatDurationSeconds(t *testing.T) {
 	}
 }
 
-func TestMask(t *testing.T) {
+func TestFormatUptime(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name     string
+		duration time.Duration
+		want     string
 	}{
 		{
-			name:  "normal token",
-			input: "hvs.CAESIJzMz_12345678901234567890",
-			want:  "hvs.****7890",
+			name:     "seconds only",
+			duration: 45 * time.Second,
+			want:     "45s",
 		},
 		{
-			name:  "short token (8 chars)",
-			input: "12345678",
-			want:  "****",
+			name:     "minutes and seconds",
+			duration: 5*time.Minute + 30*time.Second,
+			want:     "5m 30s",
 		},
 		{
-			name:  "very short token (3 chars)",
-			input: "abc",
-			want:  "****",
+			name:     "hours, minutes and seconds",
+			duration: 2*time.Hour + 15*time.Minute + 30*time.Second,
+			want:     "2h 15m 30s",
 		},
 		{
-			name:  "exactly 8 chars",
-			input: "12345678",
-			want:  "****",
+			name:     "days, hours, minutes and seconds",
+			duration: 48*time.Hour + 6*time.Hour + 30*time.Minute + 15*time.Second,
+			want:     "2d 6h 30m 15s",
 		},
 		{
-			name:  "9 chars",
-			input: "123456789",
-			want:  "1234****6789",
+			name:     "zero duration",
+			duration: 0,
+			want:     "0s",
 		},
 		{
-			name:  "10 chars",
-			input: "1234567890",
-			want:  "1234****7890",
+			name:     "exactly one day",
+			duration: 24 * time.Hour,
+			want:     "1d 0h 0m 0s",
 		},
 		{
-			name:  "empty string",
-			input: "",
-			want:  "****",
+			name:     "exactly one hour",
+			duration: 1 * time.Hour,
+			want:     "1h 0m 0s",
 		},
 		{
-			name:  "single character",
-			input: "a",
-			want:  "****",
-		},
-		{
-			name:  "long token",
-			input: "hvs.CAESIJzMz_123456789012345678901234567890",
-			want:  "hvs.****7890",
-		},
-		{
-			name:  "exactly 4 chars",
-			input: "1234",
-			want:  "****",
-		},
-		{
-			name:  "exactly 5 chars",
-			input: "12345",
-			want:  "****",
-		},
-		{
-			name:  "exactly 7 chars",
-			input: "1234567",
-			want:  "****",
+			name:     "exactly one minute",
+			duration: 1 * time.Minute,
+			want:     "1m 0s",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Mask(tt.input); got != tt.want {
-				t.Errorf("Mask() = %q, want %q", got, tt.want)
+			if got := FormatUptime(tt.duration); got != tt.want {
+				t.Errorf("FormatUptime() = %q, want %q", got, tt.want)
 			}
 		})
 	}

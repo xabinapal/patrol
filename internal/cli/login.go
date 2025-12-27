@@ -12,6 +12,7 @@ import (
 
 	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // newLoginCmd creates the login command.
@@ -156,7 +157,7 @@ func (cli *CLI) runLogin(ctx context.Context, args []string) error {
 		os.Exit(exitCode)
 	}
 
-	tokenStr := extractTokenFromOutput(captureBuf.String())
+	tokenStr := utils.ExtractTokenFromOutput(captureBuf.String())
 	if tokenStr == "" {
 		return errors.New("login succeeded but no token was returned")
 	}
@@ -202,21 +203,6 @@ func buildLoginArgs(method, path string, args []string) ([]string, error) {
 	}
 
 	return result, nil
-}
-
-// extractTokenFromOutput extracts the token from the captured output.
-// With -token-only, the token is on the last line (prompts may be interleaved from stderr).
-func extractTokenFromOutput(output string) string {
-	lines := strings.Split(strings.TrimRight(output, "\n\r"), "\n")
-
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line != "" {
-			return line
-		}
-	}
-
-	return ""
 }
 
 // buildVaultLoginArgs builds the final arguments for the vault login command.

@@ -38,11 +38,22 @@ func FormatDurationSeconds(seconds int) string {
 	return FormatDuration(time.Duration(seconds) * time.Second)
 }
 
-// Mask masks a sensitive string for display, showing only first and last few characters.
-// E.g., "abc123xyz" -> "abc1****xyz"
-func Mask(s string) string {
-	if len(s) <= 8 {
-		return "****"
+// FormatUptime formats a duration as a human-readable uptime string.
+// Shows all units (days, hours, minutes, seconds) unlike FormatDuration which shows max 2 units.
+func FormatUptime(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
 	}
-	return s[:4] + "****" + s[len(s)-4:]
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }

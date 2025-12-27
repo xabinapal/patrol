@@ -13,6 +13,7 @@ import (
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/keyring"
 	"github.com/xabinapal/patrol/internal/profile"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // newTokenHelperCmd creates a hidden command group for token helper operations.
@@ -226,9 +227,9 @@ func (cli *CLI) getTokenHelperConnection() (*config.Connection, error) {
 
 	// Create a unique profile name from the address for token helper mode
 	// This ensures different servers have different keyring entries
-	profileName := sanitizeAddressForProfile(addr)
+	profileName := utils.SanitizeAddressForProfile(addr)
 	if namespace != "" {
-		profileName += "-" + sanitizeNamespace(namespace)
+		profileName += "-" + utils.SanitizeNamespace(namespace)
 	}
 
 	conn := &config.Connection{
@@ -243,22 +244,4 @@ func (cli *CLI) getTokenHelperConnection() (*config.Connection, error) {
 	}
 
 	return conn, nil
-}
-
-// sanitizeAddressForProfile converts an address to a safe profile name.
-func sanitizeAddressForProfile(addr string) string {
-	name := addr
-	name = strings.TrimPrefix(name, "https://")
-	name = strings.TrimPrefix(name, "http://")
-	name = strings.ReplaceAll(name, ":", "-")
-	name = strings.ReplaceAll(name, "/", "-")
-	name = strings.ReplaceAll(name, ".", "-")
-	// Remove trailing dashes
-	name = strings.TrimRight(name, "-")
-	return name
-}
-
-// sanitizeNamespace converts a namespace to a safe string.
-func sanitizeNamespace(ns string) string {
-	return strings.ReplaceAll(ns, "/", "-")
 }
