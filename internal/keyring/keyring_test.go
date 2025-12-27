@@ -5,8 +5,12 @@ import (
 	"testing"
 )
 
-func TestMockStore(t *testing.T) {
-	store := NewMockStore()
+func TestFileStoreBasic(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewFileStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewFileStore() failed: %v", err)
+	}
 
 	// Test IsAvailable
 	if err := store.IsAvailable(); err != nil {
@@ -45,45 +49,6 @@ func TestMockStore(t *testing.T) {
 	// Test Delete non-existent (should not error)
 	if err := store.Delete("non-existent"); err != nil {
 		t.Errorf("Delete(non-existent) should not error: %v", err)
-	}
-}
-
-func TestMockStoreFailing(t *testing.T) {
-	store := NewMockStore()
-	store.SetFailing(true)
-
-	// All operations should fail
-	if err := store.IsAvailable(); !errors.Is(err, ErrKeyringUnavailable) {
-		t.Errorf("IsAvailable() should return ErrKeyringUnavailable when failing")
-	}
-
-	if err := store.Set("key", "token"); !errors.Is(err, ErrKeyringUnavailable) {
-		t.Errorf("Set() should return ErrKeyringUnavailable when failing")
-	}
-
-	if _, err := store.Get("key"); !errors.Is(err, ErrKeyringUnavailable) {
-		t.Errorf("Get() should return ErrKeyringUnavailable when failing")
-	}
-
-	if err := store.Delete("key"); !errors.Is(err, ErrKeyringUnavailable) {
-		t.Errorf("Delete() should return ErrKeyringUnavailable when failing")
-	}
-}
-
-func TestMockStoreClear(t *testing.T) {
-	store := NewMockStore()
-
-	store.Set("key1", "token1")
-	store.Set("key2", "token2")
-
-	if store.Count() != 2 {
-		t.Errorf("Count() = %d, want 2", store.Count())
-	}
-
-	store.Clear()
-
-	if store.Count() != 0 {
-		t.Errorf("Count() after Clear() = %d, want 0", store.Count())
 	}
 }
 

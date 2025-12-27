@@ -95,8 +95,8 @@ connections:
 		t.Errorf("login did not report success, stdout: %s", output)
 	}
 
-	// Verify we can see the token in status
-	cmd = exec.CommandContext(ctx, binaryPath, "status")
+	// Verify we can see the token in profile status
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "status")
 	cmd.Env = testEnv
 	stdout.Reset()
 	stderr.Reset()
@@ -105,18 +105,21 @@ connections:
 
 	err = cmd.Run()
 	if err != nil {
-		t.Fatalf("status command failed: %v", err)
+		t.Fatalf("profile status command failed: %v", err)
 	}
 
 	statusOutput := stdout.String()
-	t.Logf("status stdout: %s", statusOutput)
+	t.Logf("profile status stdout: %s", statusOutput)
 
 	// Verify status shows we are logged in (token is stored)
 	if strings.Contains(statusOutput, "not logged in") {
-		t.Error("status shows 'not logged in' after successful login")
+		t.Error("profile status shows 'not logged in' after successful login")
 	}
-	if !strings.Contains(statusOutput, "Token:") || !strings.Contains(statusOutput, "stored") {
-		t.Error("status should show token is stored after login")
+	if !strings.Contains(statusOutput, "Token:") {
+		t.Error("profile status should show token information after login")
+	}
+	if !strings.Contains(statusOutput, "Status:") || !strings.Contains(statusOutput, "valid") {
+		t.Error("profile status should show token status as valid after login")
 	}
 }
 
@@ -279,7 +282,7 @@ connections:
 	}
 
 	// Step 2: Verify we are logged in
-	cmd = exec.CommandContext(ctx, binaryPath, "status")
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "status")
 	cmd.Env = testEnv
 	stdout.Reset()
 	stderr.Reset()
@@ -288,7 +291,7 @@ connections:
 
 	err = cmd.Run()
 	if err != nil {
-		t.Fatalf("status command failed: %v", err)
+		t.Fatalf("profile status command failed: %v", err)
 	}
 
 	statusOutput := stdout.String()
@@ -321,17 +324,17 @@ connections:
 	}
 
 	// Step 4: Verify we are now logged out
-	cmd = exec.CommandContext(ctx, binaryPath, "status")
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "status")
 	cmd.Env = testEnv
 	stdout.Reset()
 	stderr.Reset()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	_ = cmd.Run() // Status may return error when not logged in
+	_ = cmd.Run() // Profile status may return error when not logged in
 
 	statusOutput = stdout.String()
-	t.Logf("status after logout: %s", statusOutput)
+	t.Logf("profile status after logout: %s", statusOutput)
 
 	if !strings.Contains(statusOutput, "not logged in") {
 		t.Error("status should show 'not logged in' after logout")

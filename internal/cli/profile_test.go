@@ -4,30 +4,27 @@ import (
 	"testing"
 
 	"github.com/xabinapal/patrol/internal/config"
+	"github.com/xabinapal/patrol/internal/profile"
 )
 
 func TestProfileInfo(t *testing.T) {
-	info := ProfileInfo{
-		Name:     "test",
-		LoggedIn: true,
-		Current:  true,
+	info := profile.Info{
+		Name:    "test",
+		Current: true,
 	}
 
 	if info.Name != "test" {
-		t.Errorf("ProfileInfo.Name = %q, want %q", info.Name, "test")
-	}
-	if !info.LoggedIn {
-		t.Error("ProfileInfo.LoggedIn should be true")
+		t.Errorf("profile.Info.Name = %q, want %q", info.Name, "test")
 	}
 	if !info.Current {
-		t.Error("ProfileInfo.Current should be true")
+		t.Error("profile.Info.Current should be true")
 	}
 }
 
 func TestProfileListOutput(t *testing.T) {
 	output := ProfileListOutput{
 		Current: "prod",
-		Profiles: []ProfileInfo{
+		Profiles: []profile.Info{
 			{Name: "dev", Address: "http://localhost:8200", Type: "vault"},
 			{Name: "prod", Address: "https://vault.example.com:8200", Type: "vault", Current: true},
 		},

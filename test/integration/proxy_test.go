@@ -64,7 +64,7 @@ func TestVaultProxy_Help(t *testing.T) {
 	}
 
 	// Should show patrol help with our commands
-	expectedCommands := []string{"login", "logout", "status", "profile", "daemon"}
+	expectedCommands := []string{"login", "logout", "profile", "daemon"}
 	for _, cmd := range expectedCommands {
 		if !strings.Contains(stdout, cmd) {
 			t.Errorf("expected %q in help output, got: %s", cmd, stdout)

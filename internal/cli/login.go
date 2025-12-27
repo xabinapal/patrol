@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/proxy"
 )
 
@@ -129,18 +130,18 @@ func (cli *CLI) runLogin(ctx context.Context, args []string) error {
 		return fmt.Errorf("cannot store token: %w", err)
 	}
 
-	conn, err := cli.GetCurrentConnection()
+	prof, err := profile.GetCurrent(cli.Config)
 	if err != nil {
 		return err
 	}
 
-	if !proxy.BinaryExists(conn) {
-		return fmt.Errorf("vault/openbao binary %q not found in PATH", conn.GetBinaryPath())
+	if !proxy.BinaryExists(prof.Connection) {
+		return fmt.Errorf("vault/openbao binary %q not found in PATH", prof.GetBinaryPath())
 	}
 
 	loginArgs := buildVaultLoginArgs(args)
 
-	exec := proxy.NewExecutor(conn,
+	exec := proxy.NewExecutor(prof.Connection,
 		proxy.WithStdout(os.Stdout),
 		proxy.WithStderr(os.Stderr),
 	)
@@ -160,15 +161,15 @@ func (cli *CLI) runLogin(ctx context.Context, args []string) error {
 		return errors.New("login succeeded but no token was returned")
 	}
 
-	if err := cli.Keyring.Set(conn.KeyringKey(), tokenStr); err != nil {
+	if err := prof.SetToken(cli.Keyring, tokenStr); err != nil {
 		return fmt.Errorf("failed to store token securely: %w", err)
 	}
 
 	fmt.Println()
 	fmt.Println("Success! You are now authenticated.")
 	fmt.Printf("Token stored securely in your system's credential store.\n")
-	if conn.Name != "" && conn.Name != "env" {
-		fmt.Printf("Profile: %s\n", conn.Name)
+	if prof.Name != "" && prof.Name != "env" {
+		fmt.Printf("Profile: %s\n", prof.Name)
 	}
 	fmt.Println()
 	fmt.Println("Your token will be automatically used for subsequent vault commands via Patrol.")

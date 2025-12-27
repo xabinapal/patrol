@@ -33,6 +33,12 @@ func NewFileStore(dir string) (*FileStore, error) {
 	return &FileStore{dir: dir}, nil
 }
 
+// Dir returns the directory path used by this store.
+// This is exposed for testing purposes.
+func (f *FileStore) Dir() string {
+	return f.dir
+}
+
 // IsAvailable implements Store.
 func (f *FileStore) IsAvailable() error {
 	info, err := os.Stat(f.dir)

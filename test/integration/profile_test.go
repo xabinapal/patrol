@@ -115,7 +115,7 @@ func TestProfile_Switch(t *testing.T) {
 
 	// Switch to second profile
 	var stdout, stderr strings.Builder
-	cmd = exec.CommandContext(ctx, binaryPath, "use", "second")
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "use", "second")
 	cmd.Env = baseEnv
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -282,7 +282,7 @@ func TestProfile_AddOpenBao(t *testing.T) {
 	// Show the profile and verify type
 	stdout.Reset()
 	stderr.Reset()
-	cmd = exec.CommandContext(ctx, binaryPath, "profile", "show", "openbao-test")
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "status", "openbao-test")
 	cmd.Env = baseEnv
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

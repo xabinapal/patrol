@@ -96,20 +96,17 @@ func (cli *CLI) InitializeForProxy() error {
 
 // proxyCommand proxies a command to the Vault/OpenBao CLI.
 func (cli *CLI) proxyCommand(ctx context.Context, args []string) error {
-	// Get the current connection
-	conn, err := cli.GetCurrentConnection()
+	// Get the current profile
+	prof, err := cli.GetCurrentProfile()
 	if err != nil {
 		return err
 	}
 
-	// Get the stored token
-	token, err := cli.GetToken() // Ignore error, token is optional
-	if err != nil {
-		token = "" // No token available
-	}
+	// Get the stored token (optional - token is not required for proxy)
+	token, _ := prof.GetToken(cli.Keyring) //nolint:errcheck // token is optional
 
 	// Create the executor
-	exec := proxy.NewExecutor(conn,
+	exec := proxy.NewExecutor(prof.Connection,
 		proxy.WithToken(token),
 		proxy.WithStdin(os.Stdin),
 		proxy.WithStdout(os.Stdout),

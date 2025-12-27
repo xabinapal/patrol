@@ -2,7 +2,6 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,7 +16,7 @@ import (
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/keyring"
 	"github.com/xabinapal/patrol/internal/notify"
-	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/token"
 )
 
@@ -181,29 +180,17 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 	tokensManaged := 0
 
 	for _, conn := range d.config.Connections {
-		// Get the stored token
-		tokenStr, err := d.keyring.Get(conn.KeyringKey())
-		if err != nil {
-			if errors.Is(err, keyring.ErrTokenNotFound) {
-				continue // No token for this profile
-			}
-			d.logger.Error(fmt.Sprintf("Error getting token for %s: %v", conn.Name, err))
-			if d.healthServer != nil {
-				d.healthServer.RecordError()
-			}
-			continue
+		prof := &profile.Profile{Connection: &conn}
+
+		// Check if token exists for this profile
+		if !prof.HasToken(d.keyring) {
+			continue // No token for this profile
 		}
 
 		tokensManaged++
 
-		// Check if we can execute vault commands
-		if !proxy.BinaryExists(&conn) {
-			d.logger.Debug(fmt.Sprintf("Binary not found for %s, skipping renewal check", conn.Name))
-			continue
-		}
-
 		// Look up token to get current TTL
-		lookupData, err := d.lookupToken(ctx, &conn, tokenStr)
+		lookupData, err := prof.LookupToken(ctx, d.keyring)
 		if err != nil {
 			d.logger.Error(fmt.Sprintf("Error looking up token for %s: %v", conn.Name, err))
 			if d.healthServer != nil {
@@ -215,7 +202,9 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 		d.logger.Debug(fmt.Sprintf("Token for %s: TTL=%ds, Renewable=%v", conn.Name, lookupData.TTL, lookupData.Renewable))
 
 		// Check if token needs renewal
-		if d.needsRenewal(lookupData) {
+		minTTL := d.config.Daemon.MinRenewTTL
+		threshold := d.config.Daemon.RenewThreshold
+		if token.NeedsRenewalFromLookup(lookupData, threshold, minTTL) {
 			if !lookupData.Renewable {
 				d.logger.Warn(fmt.Sprintf("Token for %s needs renewal but is not renewable (TTL: %ds)",
 					conn.Name, lookupData.TTL))
@@ -232,7 +221,8 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 
 			d.logger.Info(fmt.Sprintf("Renewing token for %s (current TTL: %ds)", conn.Name, lookupData.TTL))
 
-			if err := d.renewToken(ctx, &conn, tokenStr); err != nil {
+			_, err := prof.RenewToken(ctx, d.keyring, "")
+			if err != nil {
 				d.logger.Error(fmt.Sprintf("Error renewing token for %s: %v", conn.Name, err))
 				d.recordRenewalFailure(conn.Name)
 				if d.healthServer != nil {
@@ -250,7 +240,7 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 
 			// Get new TTL for notification
 			newTTL := time.Duration(lookupData.CreationTTL) * time.Second // Use creation TTL as estimate
-			if newLookup, err := d.lookupToken(ctx, &conn, tokenStr); err == nil {
+			if newLookup, err := prof.LookupToken(ctx, d.keyring); err == nil {
 				newTTL = time.Duration(newLookup.TTL) * time.Second
 			}
 
@@ -270,82 +260,6 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 	if d.healthServer != nil {
 		d.healthServer.RecordCheck(tokensManaged)
 	}
-}
-
-// lookupToken queries Vault for token information.
-func (d *Daemon) lookupToken(ctx context.Context, conn *config.Connection, tokenStr string) (*token.VaultTokenLookupData, error) {
-	// Silent - we only need to parse JSON, not show output
-	exec := proxy.NewExecutor(conn, proxy.WithToken(tokenStr))
-
-	var captureBuf bytes.Buffer
-	exitCode, err := exec.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
-	if err != nil {
-		return nil, err
-	}
-
-	if exitCode != 0 {
-		return nil, fmt.Errorf("token lookup failed: %s", captureBuf.String())
-	}
-
-	return token.ParseLookupResponse(captureBuf.Bytes())
-}
-
-// needsRenewal checks if a token needs to be renewed based on configuration.
-func (d *Daemon) needsRenewal(data *token.VaultTokenLookupData) bool {
-	if data.TTL <= 0 {
-		return false // Token doesn't expire or is already expired
-	}
-
-	// Check minimum TTL threshold
-	minTTL := int(d.config.Daemon.MinRenewTTL.Seconds())
-	if data.TTL < minTTL {
-		return true
-	}
-
-	// Check percentage threshold
-	if data.CreationTTL > 0 {
-		elapsed := data.CreationTTL - data.TTL
-		elapsedRatio := float64(elapsed) / float64(data.CreationTTL)
-		if elapsedRatio >= d.config.Daemon.RenewThreshold {
-			return true
-		}
-	}
-
-	return false
-}
-
-// renewToken attempts to renew a token.
-func (d *Daemon) renewToken(ctx context.Context, conn *config.Connection, tokenStr string) error {
-	// Silent - we only need to parse JSON, not show output
-	exec := proxy.NewExecutor(conn, proxy.WithToken(tokenStr))
-
-	var captureBuf bytes.Buffer
-	exitCode, err := exec.Execute(ctx, []string{"token", "renew", "-format=json"}, &captureBuf)
-	if err != nil {
-		return err
-	}
-
-	if exitCode != 0 {
-		return fmt.Errorf("token renewal failed: %s", captureBuf.String())
-	}
-
-	// Parse the response to get the new token (in case it changed)
-	tok, err := token.ParseLoginResponse(captureBuf.Bytes())
-	if err != nil {
-		// Token might not have changed, that's OK
-		d.logger.Debug(fmt.Sprintf("Could not parse renewal response for %s: %v", conn.Name, err))
-		return nil
-	}
-
-	// If the token changed, update it in the keyring
-	if tok.ClientToken != "" && tok.ClientToken != tokenStr {
-		if err := d.keyring.Set(conn.KeyringKey(), tok.ClientToken); err != nil {
-			return fmt.Errorf("failed to update renewed token: %w", err)
-		}
-		d.logger.Debug(fmt.Sprintf("Token for %s was updated during renewal", conn.Name))
-	}
-
-	return nil
 }
 
 // getBackoff returns the backoff state for a connection, creating it if needed.

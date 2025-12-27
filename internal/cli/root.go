@@ -3,7 +3,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
@@ -11,6 +10,7 @@ import (
 
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/keyring"
+	"github.com/xabinapal/patrol/internal/profile"
 )
 
 // CLI holds the application state for the CLI.
@@ -166,49 +166,7 @@ func (cli *CLI) Execute(ctx context.Context) error {
 	return cli.rootCmd.ExecuteContext(ctx)
 }
 
-// GetCurrentConnection returns the current connection, considering flags and env vars.
-func (cli *CLI) GetCurrentConnection() (*config.Connection, error) {
-	if cli.Config.Current == "" {
-		return nil, errors.New("no active profile configured - use 'patrol profile add' to add a profile, then 'patrol profile use <profile>' to activate it")
-	}
-
-	return cli.Config.GetCurrentConnection()
-}
-
-// GetToken retrieves the token for the current connection.
-func (cli *CLI) GetToken() (string, error) {
-	conn, err := cli.GetCurrentConnection()
-	if err != nil {
-		return "", err
-	}
-
-	token, err := cli.Keyring.Get(conn.KeyringKey())
-	if err != nil {
-		if errors.Is(err, keyring.ErrTokenNotFound) {
-			return "", nil // No token, not an error
-		}
-		return "", err
-	}
-
-	return token, nil
-}
-
-// SetToken stores a token for the current connection.
-func (cli *CLI) SetToken(token string) error {
-	conn, err := cli.GetCurrentConnection()
-	if err != nil {
-		return err
-	}
-
-	return cli.Keyring.Set(conn.KeyringKey(), token)
-}
-
-// DeleteToken removes the token for the current connection.
-func (cli *CLI) DeleteToken() error {
-	conn, err := cli.GetCurrentConnection()
-	if err != nil {
-		return err
-	}
-
-	return cli.Keyring.Delete(conn.KeyringKey())
+// GetCurrentProfile returns the current profile, considering flags and env vars.
+func (cli *CLI) GetCurrentProfile() (*profile.Profile, error) {
+	return profile.GetCurrent(cli.Config)
 }

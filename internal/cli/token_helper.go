@@ -12,6 +12,7 @@ import (
 
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/keyring"
+	"github.com/xabinapal/patrol/internal/profile"
 )
 
 // newTokenHelperCmd creates a hidden command group for token helper operations.
@@ -117,8 +118,11 @@ func (cli *CLI) handleTokenHelperGet() error {
 		return nil
 	}
 
+	// Create profile from connection
+	prof := &profile.Profile{Connection: conn}
+
 	// Get the token
-	token, err := cli.Keyring.Get(conn.KeyringKey())
+	token, err := prof.GetToken(cli.Keyring)
 	if err != nil {
 		if errors.Is(err, keyring.ErrTokenNotFound) {
 			// No token stored, this is normal
@@ -176,7 +180,8 @@ func (cli *CLI) handleTokenHelperStore() error {
 	}
 
 	// Store the token
-	if err := cli.Keyring.Set(conn.KeyringKey(), token); err != nil {
+	prof := &profile.Profile{Connection: conn}
+	if err := prof.SetToken(cli.Keyring, token); err != nil {
 		fmt.Fprintf(os.Stderr, "patrol: failed to store token: %v\n", err)
 		os.Exit(1)
 	}
@@ -198,7 +203,8 @@ func (cli *CLI) handleTokenHelperErase() error {
 	}
 
 	// Delete the token (ignore "not found" errors)
-	if err := cli.Keyring.Delete(conn.KeyringKey()); err != nil {
+	prof := &profile.Profile{Connection: conn}
+	if err := prof.DeleteToken(cli.Keyring); err != nil {
 		if !errors.Is(err, keyring.ErrTokenNotFound) {
 			fmt.Fprintf(os.Stderr, "patrol: failed to erase token: %v\n", err)
 			os.Exit(1)

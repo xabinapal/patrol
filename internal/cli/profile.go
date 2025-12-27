@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -14,25 +12,16 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xabinapal/patrol/internal/config"
-	"github.com/xabinapal/patrol/internal/keyring"
-	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/token"
+	"github.com/xabinapal/patrol/internal/utils"
+	"github.com/xabinapal/patrol/internal/vault"
 )
 
 // ProfileListOutput represents profile list output for JSON.
 type ProfileListOutput struct {
-	Current  string        `json:"current"`
-	Profiles []ProfileInfo `json:"profiles"`
-}
-
-// ProfileInfo represents a single profile in the list.
-type ProfileInfo struct {
-	Name      string `json:"name"`
-	Address   string `json:"address"`
-	Type      string `json:"type"`
-	Namespace string `json:"namespace,omitempty"`
-	LoggedIn  bool   `json:"logged_in"`
-	Current   bool   `json:"current"`
+	Current  string         `json:"current"`
+	Profiles []profile.Info `json:"profiles"`
 }
 
 // newProfileCmd creates the profile command group.
@@ -94,31 +83,12 @@ func (cli *CLI) newProfileListCmd() *cobra.Command {
 func (cli *CLI) runProfileList(format OutputFormat) error {
 	output := NewOutputWriter(format)
 
-	// Build profile list for JSON output
+	// Get profiles from config
+	profiles := profile.List(cli.Config)
+
 	profileList := ProfileListOutput{
 		Current:  cli.Config.Current,
-		Profiles: make([]ProfileInfo, 0, len(cli.Config.Connections)),
-	}
-
-	for _, conn := range cli.Config.Connections {
-		connType := string(conn.Type)
-		if connType == "" {
-			connType = "vault"
-		}
-
-		loggedIn := false
-		if _, err := cli.Keyring.Get(conn.KeyringKey()); err == nil {
-			loggedIn = true
-		}
-
-		profileList.Profiles = append(profileList.Profiles, ProfileInfo{
-			Name:      conn.Name,
-			Address:   conn.Address,
-			Type:      connType,
-			Namespace: conn.Namespace,
-			LoggedIn:  loggedIn,
-			Current:   conn.Name == cli.Config.Current,
-		})
+		Profiles: profiles,
 	}
 
 	if len(cli.Config.Connections) == 0 {
@@ -133,23 +103,27 @@ func (cli *CLI) runProfileList(format OutputFormat) error {
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "NAME\tADDRESS\tTYPE\tLOGGED IN")
 
-		for _, conn := range cli.Config.Connections {
+		for _, prof := range profiles {
 			current := ""
-			if conn.Name == cli.Config.Current {
+			if prof.Current {
 				current = "* "
 			}
 
-			loggedIn := "no"
-			if _, err := cli.Keyring.Get(conn.KeyringKey()); err == nil {
-				loggedIn = "yes"
+			// Check keyring to see if logged in (CLI layer responsibility)
+			loggedInStr := "no"
+			profProfile, err := profile.Get(cli.Config, prof.Name)
+			if err == nil {
+				if profProfile.HasToken(cli.Keyring) {
+					loggedInStr = "yes"
+				}
 			}
 
-			connType := string(conn.Type)
+			connType := prof.Type
 			if connType == "" {
 				connType = "vault"
 			}
 
-			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", current, conn.Name, conn.Address, connType, loggedIn)
+			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", current, prof.Name, prof.Address, connType, loggedInStr)
 		}
 
 		// #nosec G104 - Flush error on stdout; if write fails, user will see incomplete output
@@ -270,16 +244,12 @@ func (cli *CLI) newProfileRemoveCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			// Check if token exists
-			conn, err := cli.Config.GetConnection(name)
+			prof, err := profile.Get(cli.Config, name)
 			if err != nil {
 				return err
 			}
 
-			hasToken := false
-			if _, err := cli.Keyring.Get(conn.KeyringKey()); err == nil {
-				hasToken = true
-			}
+			hasToken := prof.HasToken(cli.Keyring)
 
 			if hasToken && !forceFlag {
 				return fmt.Errorf("profile %q has a stored token. Use --force to remove anyway, or logout first", name)
@@ -287,10 +257,8 @@ func (cli *CLI) newProfileRemoveCmd() *cobra.Command {
 
 			// Remove token if exists
 			if hasToken {
-				if err := cli.Keyring.Delete(conn.KeyringKey()); err != nil {
-					if !errors.Is(err, keyring.ErrTokenNotFound) {
-						return fmt.Errorf("failed to remove token: %w", err)
-					}
+				if err := prof.DeleteToken(cli.Keyring); err != nil {
+					return fmt.Errorf("failed to remove token: %w", err)
 				}
 			}
 
@@ -299,6 +267,7 @@ func (cli *CLI) newProfileRemoveCmd() *cobra.Command {
 				return err
 			}
 
+			// Save the updated configuration
 			if err := cli.Config.Save(); err != nil {
 				return fmt.Errorf("failed to save configuration: %w", err)
 			}
@@ -340,10 +309,11 @@ func (cli *CLI) newProfileEditCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			conn, err := cli.Config.GetConnection(name)
+			prof, err := profile.Get(cli.Config, name)
 			if err != nil {
 				return err
 			}
+			conn := prof.Connection
 
 			// Update fields that were specified
 			if address != "" {
@@ -434,23 +404,21 @@ Examples:
 			if err := cli.Config.SetCurrent(name); err != nil {
 				return err
 			}
-
 			if err := cli.Config.Save(); err != nil {
 				return fmt.Errorf("failed to save configuration: %w", err)
 			}
 
-			conn, err := cli.Config.GetConnection(name)
+			prof, err := profile.Get(cli.Config, name)
 			if err != nil {
-				// Connection not found, but continue with address from args
-				conn = &config.Connection{Address: name}
+				// Profile not found, but continue with address from args
+				fmt.Printf("Switched to profile %q\n", name)
+				return nil
 			}
-			fmt.Printf("Switched to profile %q (%s)\n", name, conn.Address)
+			fmt.Printf("Switched to profile %q (%s)\n", name, prof.Address)
 
 			// Check if logged in
-			if _, err := cli.Keyring.Get(conn.KeyringKey()); err != nil {
-				if errors.Is(err, keyring.ErrTokenNotFound) {
-					fmt.Println("Note: You are not logged in to this profile. Run 'patrol login' to authenticate.")
-				}
+			if !prof.HasToken(cli.Keyring) {
+				fmt.Println("Note: You are not logged in to this profile. Run 'patrol login' to authenticate.")
 			}
 
 			return nil
@@ -460,40 +428,15 @@ Examples:
 
 // getProfileNames returns a list of all profile names for completion.
 func (cli *CLI) getProfileNames() []string {
-	if cli.Config == nil {
+	profiles := profile.List(cli.Config)
+	if profiles == nil {
 		return nil
 	}
-	names := make([]string, 0, len(cli.Config.Connections))
-	for _, conn := range cli.Config.Connections {
-		names = append(names, conn.Name)
+	names := make([]string, 0, len(profiles))
+	for _, p := range profiles {
+		names = append(names, p.Name)
 	}
 	return names
-}
-
-// maskToken masks a token for display, showing only first and last few characters.
-func maskToken(t string) string {
-	if len(t) <= 8 {
-		return "****"
-	}
-	return t[:4] + "****" + t[len(t)-4:]
-}
-
-// formatTokenDuration formats a duration in a human-readable way.
-func formatTokenDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
-	}
-	if d < 24*time.Hour {
-		hours := int(d.Hours())
-		mins := int(d.Minutes()) % 60
-		return fmt.Sprintf("%dh %dm", hours, mins)
-	}
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	return fmt.Sprintf("%dd %dh", days, hours)
 }
 
 // newProfileRenewCmd creates the profile renew command.
@@ -520,60 +463,34 @@ If no profile name is given, renews the token for the current profile.`,
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 
-			var conn *config.Connection
-			var err error
+			var prof *profile.Profile
 			if len(args) > 0 {
-				conn, err = cli.Config.GetConnection(args[0])
+				var err error
+				prof, err = profile.Get(cli.Config, args[0])
+				if err != nil {
+					return err
+				}
 			} else {
-				conn, err = cli.GetCurrentConnection()
+				var err error
+				prof, err = profile.GetCurrent(cli.Config)
+				if err != nil {
+					return err
+				}
 			}
+
+			// Get current token for comparison
+			storedToken, err := prof.GetToken(cli.Keyring)
+			if err != nil {
+				return fmt.Errorf("no token stored for profile %q; run 'patrol login' first", prof.Name)
+			}
+
+			// Renew token
+			tok, err := prof.RenewToken(ctx, cli.Keyring, increment)
 			if err != nil {
 				return err
 			}
 
-			// Get the stored token
-			storedToken, err := cli.Keyring.Get(conn.KeyringKey())
-			if err != nil {
-				if errors.Is(err, keyring.ErrTokenNotFound) {
-					return fmt.Errorf("no token stored for profile %q; run 'patrol login' first", conn.Name)
-				}
-				return fmt.Errorf("failed to get token: %w", err)
-			}
-
-			if !proxy.BinaryExists(conn) {
-				return fmt.Errorf("vault/openbao binary %q not found", conn.GetBinaryPath())
-			}
-
-			// Build renew args
-			renewArgs := []string{"token", "renew", "-format=json"}
-			if increment != "" {
-				renewArgs = append(renewArgs, "-increment="+increment)
-			}
-
-			// Silent - we only need to parse JSON, not show output
-			exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-			var captureBuf bytes.Buffer
-			exitCode, err := exec.Execute(ctx, renewArgs, &captureBuf)
-			if err != nil {
-				return fmt.Errorf("failed to renew token: %w", err)
-			}
-
-			if exitCode != 0 {
-				return fmt.Errorf("token renewal failed: %s", captureBuf.String())
-			}
-
-			// Parse response
-			tok, err := token.ParseLoginResponse(captureBuf.Bytes())
-			if err != nil {
-				fmt.Println("Token renewed successfully (could not parse response)")
-				return nil
-			}
-
-			// Update token in keyring if it changed
-			if tok.ClientToken != "" && tok.ClientToken != storedToken {
-				if err := cli.Keyring.Set(conn.KeyringKey(), tok.ClientToken); err != nil {
-					return fmt.Errorf("failed to update token in keyring: %w", err)
-				}
+			if tok.ClientToken != storedToken {
 				fmt.Println("Token renewed and updated in keyring")
 			} else {
 				fmt.Println("Token renewed successfully")
@@ -582,7 +499,7 @@ If no profile name is given, renews the token for the current profile.`,
 			// Show new TTL
 			if tok.LeaseDuration > 0 {
 				ttl := time.Duration(tok.LeaseDuration) * time.Second
-				fmt.Printf("New TTL: %s\n", formatTokenDuration(ttl))
+				fmt.Printf("New TTL: %s\n", utils.FormatDuration(ttl))
 			}
 
 			return nil
@@ -621,47 +538,39 @@ If no profile name is given, revokes the token for the current profile.`,
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 
-			var conn *config.Connection
-			var err error
+			var prof *profile.Profile
 			if len(args) > 0 {
-				conn, err = cli.Config.GetConnection(args[0])
+				var err error
+				prof, err = profile.Get(cli.Config, args[0])
+				if err != nil {
+					return err
+				}
 			} else {
-				conn, err = cli.GetCurrentConnection()
-			}
-			if err != nil {
-				return err
+				var err error
+				prof, err = profile.GetCurrent(cli.Config)
+				if err != nil {
+					return err
+				}
 			}
 
-			// Get the stored token
-			storedToken, err := cli.Keyring.Get(conn.KeyringKey())
-			if err != nil {
-				if errors.Is(err, keyring.ErrTokenNotFound) {
-					fmt.Printf("No token stored for profile %q\n", conn.Name)
-					return nil
-				}
-				return fmt.Errorf("failed to get token: %w", err)
+			// Check if token exists
+			if !prof.HasToken(cli.Keyring) {
+				fmt.Printf("No token stored for profile %q\n", prof.Name)
+				return nil
 			}
 
 			// Revoke token with Vault (unless skipped)
 			if !skipRevoke {
-				if proxy.BinaryExists(conn) {
-					// Silent - we only need to check if revoke succeeded
-					exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-					var captureBuf bytes.Buffer
-					exitCode, err := exec.Execute(ctx, []string{"token", "revoke", "-self"}, &captureBuf)
-					if err != nil || exitCode != 0 {
-						fmt.Printf("Warning: failed to revoke token with Vault: %s\n", captureBuf.String())
-						fmt.Println("The token will be removed from the keyring anyway.")
-					} else {
-						fmt.Println("Token revoked with Vault")
-					}
+				if err := prof.RevokeToken(ctx, cli.Keyring); err != nil {
+					fmt.Printf("Warning: failed to revoke token with Vault: %v\n", err)
+					fmt.Println("The token will be removed from the keyring anyway.")
 				} else {
-					fmt.Println("Warning: Vault binary not found, cannot revoke token remotely")
+					fmt.Println("Token revoked with Vault")
 				}
 			}
 
 			// Remove from keyring
-			if err := cli.Keyring.Delete(conn.KeyringKey()); err != nil {
+			if err := prof.DeleteToken(cli.Keyring); err != nil {
 				return fmt.Errorf("failed to remove token from keyring: %w", err)
 			}
 
@@ -677,45 +586,9 @@ If no profile name is given, revokes the token for the current profile.`,
 
 // ProfileStatusOutput represents profile status output for JSON.
 type ProfileStatusOutput struct {
-	Profile *ProfileStatusInfo `json:"profile,omitempty"`
-	Token   *TokenStatusInfo   `json:"token,omitempty"`
-	Server  *ServerStatusInfo  `json:"server,omitempty"`
-}
-
-// ProfileStatusInfo represents profile information in status output.
-type ProfileStatusInfo struct {
-	Name          string `json:"name"`
-	Address       string `json:"address"`
-	Type          string `json:"type"`
-	Namespace     string `json:"namespace,omitempty"`
-	Binary        string `json:"binary"`
-	BinaryPath    string `json:"binary_path,omitempty"`
-	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
-	CACert        string `json:"ca_cert,omitempty"`
-	CAPath        string `json:"ca_path,omitempty"`
-	ClientCert    string `json:"client_cert,omitempty"`
-	ClientKey     string `json:"client_key,omitempty"`
-	Active        bool   `json:"active"`
-}
-
-// ServerStatusInfo represents server connectivity test results.
-type ServerStatusInfo struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
-}
-
-// TokenStatusInfo represents token information in status output.
-type TokenStatusInfo struct {
-	Stored       bool     `json:"stored"`
-	Valid        bool     `json:"valid"`
-	DisplayName  string   `json:"display_name,omitempty"`
-	TTL          int      `json:"ttl,omitempty"`
-	TTLFormatted string   `json:"ttl_formatted,omitempty"`
-	Renewable    bool     `json:"renewable,omitempty"`
-	Policies     []string `json:"policies,omitempty"`
-	AuthPath     string   `json:"auth_path,omitempty"`
-	EntityID     string   `json:"entity_id,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Profile *profile.Status     `json:"profile,omitempty"`
+	Token   *token.Status       `json:"token,omitempty"`
+	Server  *vault.HealthStatus `json:"server,omitempty"`
 }
 
 // newProfileStatusCmd creates the profile status command.
@@ -746,25 +619,22 @@ If no profile name is given, shows status for the current profile.`,
 				return err
 			}
 
-			var conn *config.Connection
-			var name string
+			var prof *profile.Profile
 			if len(args) > 0 {
 				var err error
-				conn, err = cli.Config.GetConnection(args[0])
+				prof, err = profile.Get(cli.Config, args[0])
 				if err != nil {
 					return err
 				}
-				name = args[0]
 			} else {
 				var err error
-				conn, err = cli.GetCurrentConnection()
+				prof, err = profile.GetCurrent(cli.Config)
 				if err != nil {
 					return err
 				}
-				name = cli.Config.Current
 			}
 
-			return cli.runProfileStatus(cmd.Context(), conn, name, format, showToken)
+			return cli.runProfileStatus(cmd.Context(), prof, format, showToken)
 		},
 	}
 
@@ -774,178 +644,84 @@ If no profile name is given, shows status for the current profile.`,
 }
 
 // runProfileStatus displays comprehensive status for a profile.
-func (cli *CLI) runProfileStatus(ctx context.Context, conn *config.Connection, name string, format OutputFormat, showToken bool) error {
+func (cli *CLI) runProfileStatus(ctx context.Context, prof *profile.Profile, format OutputFormat, showToken bool) error {
 	output := NewOutputWriter(format)
 
 	// Initialize status output for JSON
 	status := &ProfileStatusOutput{}
 
-	// Set comprehensive profile info
-	status.Profile = &ProfileStatusInfo{
-		Name:          conn.Name,
-		Address:       conn.Address,
-		Type:          string(conn.Type),
-		Namespace:     conn.Namespace,
-		Binary:        conn.GetBinaryPath(),
-		BinaryPath:    conn.BinaryPath,
-		TLSSkipVerify: conn.TLSSkipVerify,
-		CACert:        conn.CACert,
-		CAPath:        conn.CAPath,
-		ClientCert:    conn.ClientCert,
-		ClientKey:     conn.ClientKey,
-		Active:        name == cli.Config.Current,
+	// Get profile status
+	profileStatus, err := profile.GetStatus(cli.Config, prof.Name)
+	if err != nil {
+		return err
 	}
+	status.Profile = profileStatus
 
 	// Test server connectivity
-	serverStatus := cli.testServerConnectivity(ctx, conn)
+	serverStatus := vault.CheckHealth(ctx, prof.Connection)
 	status.Server = serverStatus
 
-	// Get stored token and determine token state
-	var storedToken string
+	// Get token status
+	tokenStatus, storedToken, err := prof.GetTokenStatus(ctx, cli.Keyring)
+	if err != nil {
+		return err
+	}
+	status.Token = tokenStatus
+
+	// Get lookup data for display if token is valid (optional - we already have status)
 	var lookupData *token.VaultTokenLookupData
-
-	var tokenErr error
-	storedToken, tokenErr = cli.Keyring.Get(conn.KeyringKey())
-	if errors.Is(tokenErr, keyring.ErrTokenNotFound) {
-		status.Token = &TokenStatusInfo{
-			Stored: false,
-			Valid:  false,
-		}
-	} else if tokenErr != nil {
-		return fmt.Errorf("failed to retrieve token: %w", tokenErr)
-	} else {
-		// Token is stored
-		status.Token = &TokenStatusInfo{
-			Stored: true,
-		}
-
-		// Try to get token details from Vault
-		if proxy.BinaryExists(conn) {
-			exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-			var captureBuf bytes.Buffer
-			exitCode, err := exec.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
-			if err != nil {
-				return fmt.Errorf("failed to lookup token: %w", err)
-			}
-
-			if exitCode == 0 {
-				lookupData, err = token.ParseLookupResponse(captureBuf.Bytes())
-				if err == nil {
-					status.Token.Valid = true
-					status.Token.DisplayName = lookupData.DisplayName
-					status.Token.TTL = lookupData.TTL
-					if lookupData.TTL > 0 {
-						status.Token.TTLFormatted = FormatDurationSeconds(lookupData.TTL)
-					}
-					status.Token.Renewable = lookupData.Renewable
-					status.Token.Policies = lookupData.Policies
-					status.Token.AuthPath = lookupData.Path
-					status.Token.EntityID = lookupData.EntityID
-				} else {
-					status.Token.Valid = true
-					status.Token.Error = "details unavailable"
-				}
-			} else {
-				status.Token.Valid = false
-				status.Token.Error = captureBuf.String()
-			}
-		} else {
-			status.Token.Error = fmt.Sprintf("%s binary not found", conn.GetBinaryPath())
+	if tokenStatus.Valid && storedToken != "" {
+		// Try to get full lookup data, but don't fail if it doesn't work
+		if data, lookupErr := prof.LookupToken(ctx, cli.Keyring); lookupErr == nil {
+			lookupData = data
 		}
 	}
 
 	// Single unified output function
 	return output.Write(status, func() {
-		cli.printProfileStatusHeader(conn, name)
+		cli.printProfileStatusHeader(prof)
 		fmt.Println()
 		cli.printServerConnectivity(status.Server)
-		cli.printTokenInformation(status.Token, storedToken, lookupData, showToken, conn)
+		cli.printTokenInformation(status.Token, storedToken, lookupData, showToken, prof.Connection)
 	})
 }
 
-// testServerConnectivity tests HTTP connectivity to the server.
-func (cli *CLI) testServerConnectivity(ctx context.Context, conn *config.Connection) *ServerStatusInfo {
-	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	status := &ServerStatusInfo{}
-
-	// Test HTTP connectivity
-	client := &http.Client{Timeout: 5 * time.Second}
-	healthURL := conn.Address + "/v1/sys/health"
-
-	req, err := http.NewRequestWithContext(testCtx, "GET", healthURL, nil)
-	if err != nil {
-		status.Status = "error"
-		status.Message = fmt.Sprintf("invalid URL: %v", err)
-		return status
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		status.Status = "error"
-		status.Message = fmt.Sprintf("connection failed: %v", err)
-		return status
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case 200:
-		status.Status = "healthy"
-		status.Message = "initialized, unsealed, active"
-	case 429, 472, 473:
-		status.Status = "standby"
-		status.Message = "standby node"
-	case 501:
-		status.Status = "uninitialized"
-		status.Message = "server is not initialized"
-	case 503:
-		status.Status = "sealed"
-		status.Message = "server is sealed"
-	default:
-		status.Status = "unknown"
-		status.Message = fmt.Sprintf("unexpected status: %d", resp.StatusCode)
-	}
-
-	return status
-}
-
 // printProfileStatusHeader prints the profile configuration header.
-func (cli *CLI) printProfileStatusHeader(conn *config.Connection, name string) {
+func (cli *CLI) printProfileStatusHeader(prof *profile.Profile) {
 	fmt.Println("Profile Configuration:")
-	fmt.Printf("  Name:            %s\n", conn.Name)
-	fmt.Printf("  Address:         %s\n", conn.Address)
-	fmt.Printf("  Type:            %s\n", conn.Type)
-	if conn.BinaryPath != "" {
-		fmt.Printf("  Binary Path:    %s\n", conn.BinaryPath)
+	fmt.Printf("  Name:            %s\n", prof.Name)
+	fmt.Printf("  Address:         %s\n", prof.Address)
+	fmt.Printf("  Type:            %s\n", prof.Type)
+	if prof.BinaryPath != "" {
+		fmt.Printf("  Binary Path:    %s\n", prof.BinaryPath)
 	} else {
-		fmt.Printf("  Binary:          %s\n", conn.GetBinaryPath())
+		fmt.Printf("  Binary:          %s\n", prof.GetBinaryPath())
 	}
-	if conn.Namespace != "" {
-		fmt.Printf("  Namespace:       %s\n", conn.Namespace)
+	if prof.Namespace != "" {
+		fmt.Printf("  Namespace:       %s\n", prof.Namespace)
 	}
-	if conn.TLSSkipVerify {
+	if prof.TLSSkipVerify {
 		fmt.Printf("  TLS Skip Verify: true\n")
 	}
-	if conn.CACert != "" {
-		fmt.Printf("  CA Cert:         %s\n", conn.CACert)
+	if prof.CACert != "" {
+		fmt.Printf("  CA Cert:         %s\n", prof.CACert)
 	}
-	if conn.CAPath != "" {
-		fmt.Printf("  CA Path:         %s\n", conn.CAPath)
+	if prof.CAPath != "" {
+		fmt.Printf("  CA Path:         %s\n", prof.CAPath)
 	}
-	if conn.ClientCert != "" {
-		fmt.Printf("  Client Cert:     %s\n", conn.ClientCert)
+	if prof.ClientCert != "" {
+		fmt.Printf("  Client Cert:     %s\n", prof.ClientCert)
 	}
-	if conn.ClientKey != "" {
-		fmt.Printf("  Client Key:      %s\n", conn.ClientKey)
+	if prof.ClientKey != "" {
+		fmt.Printf("  Client Key:      %s\n", prof.ClientKey)
 	}
-	if name == cli.Config.Current {
+	if prof.Name == cli.Config.Current {
 		fmt.Printf("  Active:          yes\n")
 	}
 }
 
 // printServerConnectivity prints server connectivity status.
-func (cli *CLI) printServerConnectivity(server *ServerStatusInfo) {
+func (cli *CLI) printServerConnectivity(server *vault.HealthStatus) {
 	if server == nil {
 		return
 	}
@@ -969,7 +745,7 @@ func (cli *CLI) printServerConnectivity(server *ServerStatusInfo) {
 }
 
 // printTokenInformation prints token information.
-func (cli *CLI) printTokenInformation(tokenInfo *TokenStatusInfo, storedToken string, lookupData *token.VaultTokenLookupData, showToken bool, conn *config.Connection) {
+func (cli *CLI) printTokenInformation(tokenInfo *token.Status, storedToken string, lookupData *token.VaultTokenLookupData, showToken bool, conn *config.Connection) {
 	fmt.Println("Token Information:")
 
 	if tokenInfo == nil || !tokenInfo.Stored {
@@ -983,48 +759,46 @@ func (cli *CLI) printTokenInformation(tokenInfo *TokenStatusInfo, storedToken st
 	if showToken {
 		fmt.Printf("  Token:           %s\n", storedToken)
 	} else {
-		fmt.Printf("  Token:           %s\n", maskToken(storedToken))
+		fmt.Printf("  Token:           %s\n", utils.Mask(storedToken))
 	}
 
 	// Print token details if available
-	if lookupData != nil && tokenInfo.Valid {
-		if lookupData.Accessor != "" {
-			fmt.Printf("  Accessor:        %s\n", lookupData.Accessor)
+	if tokenInfo.Valid {
+		if tokenInfo.Accessor != "" {
+			fmt.Printf("  Accessor:        %s\n", tokenInfo.Accessor)
 		}
-		if lookupData.DisplayName != "" {
-			fmt.Printf("  Display Name:    %s\n", lookupData.DisplayName)
+		if tokenInfo.DisplayName != "" {
+			fmt.Printf("  Display Name:    %s\n", tokenInfo.DisplayName)
 		}
-		if lookupData.TTL > 0 {
-			ttl := time.Duration(lookupData.TTL) * time.Second
+		if tokenInfo.TTL > 0 {
+			ttl := time.Duration(tokenInfo.TTL) * time.Second
 			expiry := time.Now().Add(ttl)
-			fmt.Printf("  TTL:             %s (expires %s)\n", formatTokenDuration(ttl), expiry.Format(time.RFC3339))
+			fmt.Printf("  TTL:             %s (expires %s)\n", utils.FormatDuration(ttl), expiry.Format(time.RFC3339))
 		} else {
 			fmt.Printf("  TTL:             ∞ (never expires)\n")
 		}
-		fmt.Printf("  Renewable:       %t\n", lookupData.Renewable)
-		if len(lookupData.Policies) > 0 {
-			fmt.Printf("  Policies:        %v\n", lookupData.Policies)
+		fmt.Printf("  Renewable:       %t\n", tokenInfo.Renewable)
+		if len(tokenInfo.Policies) > 0 {
+			fmt.Printf("  Policies:        %v\n", tokenInfo.Policies)
 		}
-		if lookupData.Path != "" {
-			fmt.Printf("  Auth Path:       %s\n", lookupData.Path)
+		if tokenInfo.AuthPath != "" {
+			fmt.Printf("  Auth Path:       %s\n", tokenInfo.AuthPath)
 		}
-		if lookupData.EntityID != "" {
-			fmt.Printf("  Entity ID:       %s\n", lookupData.EntityID)
+		if tokenInfo.EntityID != "" {
+			fmt.Printf("  Entity ID:       %s\n", tokenInfo.EntityID)
 		}
 		fmt.Printf("  Status:          valid\n")
 		fmt.Println()
 
 		// Renewal recommendation
 		const TokenExpiryWarningSeconds = 300 // 5 minutes
-		if lookupData.TTL > 0 && lookupData.TTL < TokenExpiryWarningSeconds && lookupData.Renewable {
+		if tokenInfo.TTL > 0 && tokenInfo.TTL < TokenExpiryWarningSeconds && tokenInfo.Renewable {
 			fmt.Println("Warning: Token will expire soon. Consider running 'patrol daemon' for auto-renewal.")
 		}
 	} else if tokenInfo.Error != "" {
 		// Token stored but has an error
 		if strings.Contains(tokenInfo.Error, "binary not found") {
 			fmt.Printf("  Status:          stored (cannot verify - %s)\n", tokenInfo.Error)
-		} else if tokenInfo.Valid {
-			fmt.Printf("  Status:          valid (details unavailable)\n")
 		} else {
 			fmt.Printf("  Status:          invalid or expired\n")
 			fmt.Printf("  Error:           %s\n", tokenInfo.Error)

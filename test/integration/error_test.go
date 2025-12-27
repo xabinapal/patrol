@@ -270,7 +270,7 @@ func TestProfile_UseNonexistent(t *testing.T) {
 
 	// Try to switch to nonexistent profile
 	var stdout, stderr strings.Builder
-	cmd = exec.CommandContext(ctx, binaryPath, "use", "nonexistent")
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "use", "nonexistent")
 	cmd.Env = baseEnv
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -357,7 +357,7 @@ connections:
 	}
 }
 
-// TestStatus_JSONOutput tests status command with JSON output.
+// TestStatus_JSONOutput tests profile status command with JSON output.
 func TestStatus_JSONOutput(t *testing.T) {
 	env := VaultTestEnv()
 	env.SkipIfNotAvailable(t)
@@ -395,7 +395,7 @@ connections:
 	binaryPath := PatrolBinaryPath(t)
 
 	var stdout, stderr strings.Builder
-	cmd := exec.CommandContext(ctx, binaryPath, "status", "-o", "json")
+	cmd := exec.CommandContext(ctx, binaryPath, "profile", "status", "-o", "json")
 	cmd.Env = testEnv
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -403,7 +403,7 @@ connections:
 	_ = cmd.Run() // May return non-zero if not logged in
 
 	output := stdout.String()
-	t.Logf("status JSON output: %s", output)
+	t.Logf("profile status JSON output: %s", output)
 
 	// Should be valid JSON
 	if !strings.HasPrefix(strings.TrimSpace(output), "{") {

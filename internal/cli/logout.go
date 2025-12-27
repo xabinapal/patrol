@@ -1,17 +1,13 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/xabinapal/patrol/internal/config"
-	"github.com/xabinapal/patrol/internal/keyring"
-	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/profile"
 )
 
 // newLogoutCmd creates the logout command.
@@ -65,35 +61,31 @@ Examples:
 
 // runLogout handles logging out from a single profile.
 func (cli *CLI) runLogout(ctx context.Context, profileName string, revoke bool) error {
-	var conn *config.Connection
+	var prof *profile.Profile
 	var err error
 
 	if profileName == "" {
-		conn, err = cli.GetCurrentConnection()
+		prof, err = profile.GetCurrent(cli.Config)
 		if err != nil {
 			return err
 		}
-		profileName = conn.Name
+		profileName = prof.Name
 	} else {
-		conn, err = cli.Config.GetConnection(profileName)
+		prof, err = profile.Get(cli.Config, profileName)
 		if err != nil {
 			return err
 		}
 	}
 
-	// Get the current token before deleting
-	token, err := cli.Keyring.Get(conn.KeyringKey())
-	if err != nil {
-		if errors.Is(err, keyring.ErrTokenNotFound) {
-			fmt.Printf("No token stored for profile %q\n", profileName)
-			return nil
-		}
-		return fmt.Errorf("failed to retrieve token: %w", err)
+	// Check if token exists
+	if !prof.HasToken(cli.Keyring) {
+		fmt.Printf("No token stored for profile %q\n", profileName)
+		return nil
 	}
 
 	// Revoke the token if requested
 	if revoke && cli.Config.RevokeOnLogout {
-		if err := cli.revokeToken(ctx, conn, token); err != nil {
+		if err := prof.RevokeToken(ctx, cli.Keyring); err != nil {
 			// Log the error but continue with local removal
 			if cli.verboseFlag {
 				fmt.Fprintf(os.Stderr, "Warning: failed to revoke token: %v\n", err)
@@ -106,7 +98,7 @@ func (cli *CLI) runLogout(ctx context.Context, profileName string, revoke bool) 
 	}
 
 	// Delete the token from keyring
-	if err := cli.Keyring.Delete(conn.KeyringKey()); err != nil {
+	if err := prof.DeleteToken(cli.Keyring); err != nil {
 		return fmt.Errorf("failed to remove token: %w", err)
 	}
 
@@ -129,19 +121,16 @@ func (cli *CLI) runLogoutAll(ctx context.Context, revoke bool) error {
 	var errs []error
 
 	for _, conn := range cli.Config.Connections {
-		// Get the token
-		token, err := cli.Keyring.Get(conn.KeyringKey())
-		if err != nil {
-			if errors.Is(err, keyring.ErrTokenNotFound) {
-				continue // No token for this profile
-			}
-			errs = append(errs, fmt.Errorf("%s: %w", conn.Name, err))
-			continue
+		prof := &profile.Profile{Connection: &conn}
+
+		// Check if token exists
+		if !prof.HasToken(cli.Keyring) {
+			continue // No token for this profile
 		}
 
 		// Revoke if requested
 		if revoke && cli.Config.RevokeOnLogout {
-			if err := cli.revokeToken(ctx, &conn, token); err != nil {
+			if err := prof.RevokeToken(ctx, cli.Keyring); err != nil {
 				if cli.verboseFlag {
 					fmt.Fprintf(os.Stderr, "Warning: failed to revoke token for %s: %v\n", conn.Name, err)
 				}
@@ -149,7 +138,7 @@ func (cli *CLI) runLogoutAll(ctx context.Context, revoke bool) error {
 		}
 
 		// Delete from keyring
-		if err := cli.Keyring.Delete(conn.KeyringKey()); err != nil {
+		if err := prof.DeleteToken(cli.Keyring); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", conn.Name, err))
 			continue
 		}
@@ -164,30 +153,6 @@ func (cli *CLI) runLogoutAll(ctx context.Context, revoke bool) error {
 
 	if len(errs) > 0 {
 		return fmt.Errorf("some profiles failed to logout: %v", errs)
-	}
-
-	return nil
-}
-
-// revokeToken revokes a token on the Vault server.
-func (cli *CLI) revokeToken(ctx context.Context, conn *config.Connection, token string) error {
-	// Check if binary exists
-	if !proxy.BinaryExists(conn) {
-		return fmt.Errorf("vault/openbao binary not found")
-	}
-
-	// Create executor with the token to revoke (silent - we only need to check if revoke succeeded)
-	exec := proxy.NewExecutor(conn, proxy.WithToken(token))
-
-	// Execute token revoke -self
-	var captureBuf bytes.Buffer
-	exitCode, err := exec.Execute(ctx, []string{"token", "revoke", "-self"}, &captureBuf)
-	if err != nil {
-		return err
-	}
-
-	if exitCode != 0 {
-		return fmt.Errorf("revoke failed: %s", captureBuf.String())
 	}
 
 	return nil

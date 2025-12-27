@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,7 +17,8 @@ import (
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/daemon"
 	"github.com/xabinapal/patrol/internal/keyring"
-	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/profile"
+	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // CheckResult represents the result of a diagnostic check.
@@ -302,7 +302,7 @@ func (cli *CLI) checkProfileConfigured() CheckResult {
 func (cli *CLI) checkBinary() []CheckResult {
 	var results []CheckResult
 
-	conn, err := cli.Config.GetCurrentConnection()
+	prof, err := profile.GetCurrent(cli.Config)
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:    "Vault/OpenBao binary",
@@ -311,6 +311,7 @@ func (cli *CLI) checkBinary() []CheckResult {
 		})
 		return results
 	}
+	conn := prof.Connection
 
 	binaryName := conn.GetBinaryPath()
 
@@ -354,7 +355,7 @@ func (cli *CLI) checkBinary() []CheckResult {
 func (cli *CLI) checkServerConnectivity(ctx context.Context) []CheckResult {
 	var results []CheckResult
 
-	conn, err := cli.Config.GetCurrentConnection()
+	prof, err := profile.GetCurrent(cli.Config)
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:    "Server connectivity",
@@ -363,6 +364,7 @@ func (cli *CLI) checkServerConnectivity(ctx context.Context) []CheckResult {
 		})
 		return results
 	}
+	conn := prof.Connection
 
 	// HTTP health check
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -439,7 +441,7 @@ func (cli *CLI) checkServerConnectivity(ctx context.Context) []CheckResult {
 func (cli *CLI) checkTokenStatus(ctx context.Context) []CheckResult {
 	var results []CheckResult
 
-	conn, err := cli.Config.GetCurrentConnection()
+	prof, err := profile.GetCurrent(cli.Config)
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:    "Token",
@@ -449,9 +451,18 @@ func (cli *CLI) checkTokenStatus(ctx context.Context) []CheckResult {
 		return results
 	}
 
-	// Check if token is stored
-	token, err := cli.Keyring.Get(conn.KeyringKey())
+	// Get token status
+	tokenStatus, _, err := prof.GetTokenStatus(ctx, cli.Keyring)
 	if err != nil {
+		results = append(results, CheckResult{
+			Name:    "Token",
+			Status:  CheckError,
+			Message: fmt.Sprintf("error checking token: %v", err),
+		})
+		return results
+	}
+
+	if !tokenStatus.Stored {
 		results = append(results, CheckResult{
 			Name:    "Token",
 			Status:  CheckWarning,
@@ -461,21 +472,7 @@ func (cli *CLI) checkTokenStatus(ctx context.Context) []CheckResult {
 		return results
 	}
 
-	// Check if binary exists for token lookup
-	if !proxy.BinaryExists(conn) {
-		results = append(results, CheckResult{
-			Name:    "Token",
-			Status:  CheckOK,
-			Message: "stored (cannot verify - binary not found)",
-		})
-		return results
-	}
-
-	// Try to look up token (silent - we only need to parse JSON)
-	executor := proxy.NewExecutor(conn, proxy.WithToken(token))
-	var captureBuf bytes.Buffer
-	exitCode, err := executor.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
-	if err != nil || exitCode != 0 {
+	if !tokenStatus.Valid {
 		results = append(results, CheckResult{
 			Name:    "Token",
 			Status:  CheckError,
@@ -485,24 +482,22 @@ func (cli *CLI) checkTokenStatus(ctx context.Context) []CheckResult {
 		return results
 	}
 
-	// Parse token info
-	tokenInfo, err := parseTokenLookupDoctor(captureBuf.Bytes())
-	if err != nil {
+	if tokenStatus.Error != "" {
 		results = append(results, CheckResult{
 			Name:    "Token",
 			Status:  CheckOK,
-			Message: "valid (could not parse details)",
+			Message: fmt.Sprintf("stored (%s)", tokenStatus.Error),
 		})
 		return results
 	}
 
 	ttlMsg := "never expires"
-	if tokenInfo.TTL > 0 {
-		ttlMsg = fmt.Sprintf("expires in %s", formatDurationDoctor(time.Duration(tokenInfo.TTL)*time.Second))
+	if tokenStatus.TTL > 0 {
+		ttlMsg = fmt.Sprintf("expires in %s", utils.FormatDurationSeconds(tokenStatus.TTL))
 	}
 
 	status := CheckOK
-	if tokenInfo.TTL > 0 && tokenInfo.TTL < TokenExpiryWarningSeconds {
+	if tokenStatus.TTL > 0 && tokenStatus.TTL < TokenExpiryWarningSeconds {
 		status = CheckWarning
 	}
 
@@ -539,26 +534,6 @@ func (cli *CLI) checkDaemonStatus() CheckResult {
 		Message: "not running",
 		Fix:     "Run 'patrol daemon start' to enable automatic token renewal",
 	}
-}
-
-// tokenLookupInfoDoctor is a helper struct for parsing token lookup response.
-type tokenLookupInfoDoctor struct {
-	TTL int `json:"ttl"`
-}
-
-func parseTokenLookupDoctor(data []byte) (*tokenLookupInfoDoctor, error) {
-	var response struct {
-		Data tokenLookupInfoDoctor `json:"data"`
-	}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, err
-	}
-	return &response.Data, nil
-}
-
-// formatDurationDoctor is an alias for FormatDurationBrief for backward compatibility.
-func formatDurationDoctor(d time.Duration) string {
-	return FormatDurationBrief(d)
 }
 
 // checkVaultTokenHelper checks if Vault's token helper is configured correctly.

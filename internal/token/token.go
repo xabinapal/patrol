@@ -246,38 +246,31 @@ func (t *Token) NeedsRenewal(threshold float64, minTTL time.Duration) bool {
 	return false
 }
 
-// FormatTTL returns a human-readable TTL string.
-func (t *Token) FormatTTL() string {
-	ttl := t.TTL()
-	if ttl < 0 {
-		return "never expires"
-	}
-	if ttl == 0 {
-		return "expired"
+// NeedsRenewalFromLookup checks if a token needs renewal based on lookup data and thresholds.
+// This is used when you have VaultTokenLookupData from a token lookup operation.
+func NeedsRenewalFromLookup(data *VaultTokenLookupData, threshold float64, minTTL time.Duration) bool {
+	if !data.Renewable {
+		return false
 	}
 
-	hours := int(ttl.Hours())
-	minutes := int(ttl.Minutes()) % 60
-	seconds := int(ttl.Seconds()) % 60
+	if data.TTL <= 0 {
+		return false // Token doesn't expire or is already expired
+	}
 
-	if hours > 24 {
-		days := hours / 24
-		hours = hours % 24
-		return fmt.Sprintf("%dd %dh", days, hours)
+	// Check minimum TTL threshold
+	ttlDuration := time.Duration(data.TTL) * time.Second
+	if ttlDuration < minTTL {
+		return true
 	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, minutes)
-	}
-	if minutes > 0 {
-		return fmt.Sprintf("%dm %ds", minutes, seconds)
-	}
-	return fmt.Sprintf("%ds", seconds)
-}
 
-// MaskedToken returns a masked version of the token for display.
-func (t *Token) MaskedToken() string {
-	if len(t.ClientToken) <= 8 {
-		return "****"
+	// Check percentage threshold
+	if data.CreationTTL > 0 {
+		elapsed := data.CreationTTL - data.TTL
+		elapsedRatio := float64(elapsed) / float64(data.CreationTTL)
+		if elapsedRatio >= threshold {
+			return true
+		}
 	}
-	return t.ClientToken[:4] + "****"
+
+	return false
 }
