@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go-version: ['1.25']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Install development tools
+        run: make install-dev-tools
+
+      - name: Download dependencies
+        run: make deps
+
+      - name: Run tests
+        run: make test
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.25'
+        with:
+          files: coverage.out
+          flags: unittests
+          name: codecov-umbrella
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install development tools
+        run: make install-dev-tools
+
+      - name: Run linter
+        run: make lint
+
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        run: make cross-build GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }}
+
+      - name: Test binary
+        if: matrix.os != 'windows-latest'
+        run: ./bin/patrol version
+
+      - name: Test binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: .\bin\patrol.exe version
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install development tools
+        run: make install-dev-tools
+
+      - name: Run security scan
+        run: make security
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      vault:
+        image: hashicorp/vault:1.21.1
+        ports:
+          - 8200:8200
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: root-token
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        options: >-
+          --cap-add=IPC_LOCK
+          --health-cmd="wget --no-verbose --tries=1 --spider http://127.0.0.1:8200/v1/sys/health || exit 1"
+          --health-interval=2s
+          --health-timeout=5s
+          --health-retries=15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install Vault CLI
+        run: |
+          ARCH=$(uname -m)
+          case $ARCH in
+            x86_64) VAULT_ARCH=amd64 ;;
+            aarch64|arm64) VAULT_ARCH=arm64 ;;
+            *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+          esac
+          wget -q https://releases.hashicorp.com/vault/1.21.1/vault_1.21.1_linux_${VAULT_ARCH}.zip -O vault.zip
+          unzip -q vault.zip
+          chmod +x vault
+          sudo mv vault /usr/local/bin/
+          rm vault.zip
+
+      - name: Build
+        run: make build
+
+      - name: Wait for Vault
+        run: |
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8200/v1/sys/health > /dev/null; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault..."
+            sleep 2
+          done
+
+      - name: Run integration tests
+        env:
+          VAULT_TEST_ADDR: http://127.0.0.1:8200
+          VAULT_TEST_TOKEN: root-token
+        run: make test-integration
