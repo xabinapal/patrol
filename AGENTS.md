@@ -22,14 +22,16 @@ You are an AI coding assistant acting as a **senior Go (Golang) developer** on t
 
 ### Verification Checklist
 Before considering any task complete:
-1. [ ] All unit tests pass (`make test`)
+1. [ ] All unit tests pass (`make test`) - **must pass without external dependencies**
 2. [ ] All integration tests pass (`make test-integration`)
 3. [ ] Code compiles without warnings (`make build`)
 4. [ ] Linter passes (`make lint`)
 5. [ ] Security scanner passes (`make security`)
 6. [ ] Code coverage meets requirements (`make coverage`)
-7. [ ] Documentation is updated
-8. [ ] Changes are committed with proper messages
+7. [ ] **Tests use mocks - no "binary not found" or similar errors in CI**
+8. [ ] **All functions that need testability accept options for dependency injection**
+9. [ ] Documentation is updated
+10. [ ] Changes are committed with proper messages
 
 ## Subagent Usage for Complex Tasks
 
@@ -76,6 +78,9 @@ For implementing a new feature:
 
 ### Enterprise Code Patterns
 - **Dependency Injection:** Use interfaces and constructor injection for testability.
+  - Functions that interact with external systems MUST accept options/parameters for dependency injection
+  - Use the options pattern (e.g., `...proxy.Option`) for flexible configuration
+  - Never create concrete dependencies inside functions that need to be testable
 - **Configuration Management:** All configurable values should come from config files or environment.
 - **Structured Logging:** Use structured logging (not fmt.Printf) for operational visibility.
 - **Graceful Degradation:** Handle failures gracefully; never crash on recoverable errors.
@@ -98,7 +103,7 @@ For implementing a new feature:
 - Goal: zero linting or formatting errors in every change.
 
 ### Go Version
-This project targets **Go 1.25**. Ensure all code is compatible, using modern features and standard libraries. Avoid deprecated practices.
+This project targets **Go 1.25.5** (as specified in go.mod). Ensure all code is compatible, using modern features and standard libraries. Avoid deprecated practices.
 
 ### Project Structure
 ```
@@ -109,8 +114,12 @@ patrol/
 │   ├── config/          # Configuration management
 │   ├── daemon/          # Background service
 │   ├── keyring/         # Secure storage
+│   ├── notify/          # Desktop notifications
+│   ├── profile/         # Profile management
 │   ├── proxy/           # Vault CLI proxy
 │   ├── token/           # Token management
+│   ├── utils/           # Utility functions
+│   ├── vault/           # Vault health checks
 │   └── version/         # Version info
 ├── test/
 │   └── integration/     # Integration tests
@@ -151,9 +160,47 @@ patrol/
 - Clean up test resources after each test.
 
 ### Mocking
-- Use interfaces for external dependencies.
-- Provide mock implementations for testing.
-- Never mock the thing you're testing.
+
+**CRITICAL**: All functions that interact with external systems (executables, filesystem, network) **MUST** accept options for dependency injection to enable testing.
+
+#### CommandRunner Pattern (proxy package)
+The `proxy` package uses a `CommandRunner` interface pattern for testability:
+
+- **All functions that execute commands MUST accept `...proxy.Option`** to allow injecting a mock `CommandRunner`
+- Functions like `BinaryExists()`, `NewExecutor()`, and all token operations accept options
+- **NEVER create a new `CommandRunner` directly** in functions that need to be testable - always accept options
+- Example pattern:
+  ```go
+  // ✅ CORRECT: Accepts options for testing
+  func Renew(ctx context.Context, conn *config.Connection, tokenStr string, opts ...proxy.Option) (*Token, error) {
+      if !proxy.BinaryExists(conn, opts...) {  // Pass options through
+          return nil, fmt.Errorf("binary not found")
+      }
+      exec := proxy.NewExecutor(conn, opts...)  // Use options
+      // ...
+  }
+
+  // ❌ WRONG: Creates real runner, can't be mocked
+  func Renew(ctx context.Context, conn *config.Connection, tokenStr string) (*Token, error) {
+      if !proxy.BinaryExists(conn) {  // Uses real runner internally
+          return nil, fmt.Errorf("binary not found")
+      }
+      // ...
+  }
+  ```
+
+#### General Mocking Guidelines
+- Use interfaces for external dependencies (filesystem, network, executables)
+- Provide mock implementations for testing
+- Never mock the thing you're testing
+- **When adding new functions that interact with external systems, ensure they accept options/parameters for dependency injection**
+- If a helper function calls another function that accepts options, **pass those options through** - don't create new dependencies internally
+
+#### Common Pitfalls to Avoid
+- ❌ Creating `NewCommandRunner()` inside a function that should be testable
+- ❌ Calling `proxy.BinaryExists()` without passing through options from the caller
+- ❌ Hardcoding file system operations instead of accepting interfaces
+- ❌ Not passing options through call chains (if function A accepts options and calls function B that also accepts options, pass them through)
 
 ### Coverage Goals
 | Package | Minimum Coverage |
@@ -164,6 +211,14 @@ patrol/
 | internal/proxy | 80% |
 | internal/cli | 70% |
 | internal/daemon | 80% |
+| internal/profile | 85% |
+
+### Testability Requirements
+- **All unit tests MUST run without external dependencies** (no vault binary, no network, no filesystem access beyond temp directories)
+- **If a test fails in CI with "binary not found" or similar, it means mocking is incomplete**
+- **Before committing, verify tests pass in a clean environment** (e.g., CI environment without vault installed)
+- Functions that check for external binaries must accept options to use mocked command runners
+- When writing tests, always use mocks - never assume external tools are available
 
 ## Git and Commit Best Practices
 
@@ -288,7 +343,10 @@ Rules:
 - [ ] Code follows project conventions
 - [ ] Error handling is complete
 - [ ] No sensitive data exposure
-- [ ] Tests are comprehensive
+- [ ] Tests are comprehensive and use mocks (no external dependencies)
+- [ ] All functions that interact with external systems accept options for dependency injection
+- [ ] Options are passed through call chains (not dropped)
+- [ ] Tests pass in clean CI environment (verified)
 - [ ] Documentation is updated
 - [ ] No unnecessary complexity
 - [ ] Performance is acceptable
@@ -319,6 +377,8 @@ Rules:
 - Use subagents to maintain focus and quality.
 - Security is non-negotiable for this project.
 - Test coverage proves correctness.
+- **Testability is mandatory** - all external dependencies must be mockable.
+- **Tests must pass in CI without external tools** - use mocks, never assume binaries exist.
 - Documentation enables maintainability.
 - Small, verified commits enable collaboration.
 

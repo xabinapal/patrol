@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -146,17 +147,35 @@ func TestExecutorOptions(t *testing.T) {
 }
 
 func TestBinaryExists(t *testing.T) {
-	// Note: BinaryExists uses exec.LookPath which we can't easily mock
-	// without refactoring. This test verifies the function doesn't panic.
 	conn := &config.Connection{
 		Type:       config.BinaryTypeVault,
 		Address:    "https://vault.example.com:8200",
 		BinaryPath: "",
 	}
 
+	// Test with real command runner (default behavior)
 	// This might return true or false depending on whether vault is installed
-	// We just test it doesn't panic
 	_ = BinaryExists(conn)
+
+	// Test with mocked command runner
+	mockRunner := newMockCommandRunner()
+	mockRunner.setLookPathFunc(func(file string) (string, error) {
+		return file, nil
+	})
+	result := BinaryExists(conn, WithCommandRunner(mockRunner))
+	if !result {
+		t.Error("BinaryExists() with mock runner = false, want true")
+	}
+
+	// Test with mocked command runner that returns error
+	mockRunner2 := newMockCommandRunner()
+	mockRunner2.setLookPathFunc(func(file string) (string, error) {
+		return "", exec.ErrNotFound
+	})
+	result2 := BinaryExists(conn, WithCommandRunner(mockRunner2))
+	if result2 {
+		t.Error("BinaryExists() with mock runner returning error = true, want false")
+	}
 }
 
 func TestExecuteWithEcho(t *testing.T) {

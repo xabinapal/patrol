@@ -18,7 +18,7 @@ func GetStatus(ctx context.Context, conn *config.Connection, tokenStr string, op
 	}
 
 	// Try to get token details from Vault
-	if !proxy.BinaryExists(conn) {
+	if !proxy.BinaryExists(conn, opts...) {
 		status.Error = fmt.Sprintf("%s binary not found", conn.GetBinaryPath())
 		return status, nil
 	}
@@ -65,7 +65,7 @@ func Lookup(ctx context.Context, conn *config.Connection, tokenStr string, opts 
 // The caller is responsible for updating storage if the token changes.
 // Options can be provided for testing (e.g., WithCommandRunner).
 func Renew(ctx context.Context, conn *config.Connection, tokenStr string, increment string, opts ...proxy.Option) (*Token, error) {
-	if !proxy.BinaryExists(conn) {
+	if !proxy.BinaryExists(conn, opts...) {
 		return nil, fmt.Errorf("vault/openbao binary %q not found", conn.GetBinaryPath())
 	}
 
@@ -99,7 +99,7 @@ func Renew(ctx context.Context, conn *config.Connection, tokenStr string, increm
 // Revoke revokes a token with Vault.
 // Options can be provided for testing (e.g., WithCommandRunner).
 func Revoke(ctx context.Context, conn *config.Connection, tokenStr string, opts ...proxy.Option) error {
-	if !proxy.BinaryExists(conn) {
+	if !proxy.BinaryExists(conn, opts...) {
 		return fmt.Errorf("vault/openbao binary %q not found", conn.GetBinaryPath())
 	}
 

@@ -339,9 +339,10 @@ func indexOf(s string, sep byte) int {
 }
 
 // BinaryExists checks if the Vault/OpenBao binary exists.
-func BinaryExists(conn *config.Connection) bool {
+// Options can be provided for testing (e.g., WithCommandRunner).
+func BinaryExists(conn *config.Connection, opts ...Option) bool {
 	binary := conn.GetBinaryPath()
-	runner := NewCommandRunner()
-	_, err := runner.LookPath(binary)
+	exec := NewExecutor(conn, opts...)
+	_, err := exec.commandRunner.LookPath(binary)
 	return err == nil
 }
