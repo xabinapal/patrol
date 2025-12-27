@@ -58,8 +58,8 @@ func TestProfile_GetToken(t *testing.T) {
 	// Test: keyring error (simulate by removing directory)
 	fileStore := mockKeyring.(*keyring.FileStore)
 	tmpDir := fileStore.Dir()
-	if err := os.RemoveAll(tmpDir); err != nil {
-		t.Fatalf("failed to remove directory: %v", err)
+	if removeErr := os.RemoveAll(tmpDir); removeErr != nil {
+		t.Fatalf("failed to remove directory: %v", removeErr)
 	}
 	_, err = prof.GetToken(mockKeyring)
 	if err == nil {

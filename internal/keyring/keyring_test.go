@@ -13,13 +13,13 @@ func TestFileStoreBasic(t *testing.T) {
 	}
 
 	// Test IsAvailable
-	if err := store.IsAvailable(); err != nil {
-		t.Errorf("IsAvailable() should not error: %v", err)
+	if availErr := store.IsAvailable(); availErr != nil {
+		t.Errorf("IsAvailable() should not error: %v", availErr)
 	}
 
 	// Test Set and Get
-	if err := store.Set("test-key", "test-token"); err != nil {
-		t.Errorf("Set() failed: %v", err)
+	if setErr := store.Set("test-key", "test-token"); setErr != nil {
+		t.Errorf("Set() failed: %v", setErr)
 	}
 
 	token, err := store.Get("test-key")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -103,11 +104,15 @@ func (m *LaunchdManager) Install() error {
 		return fmt.Errorf("failed to write plist: %w", err)
 	}
 
-	// Load the agent
+	// Bootstrap the agent (RunAtLoad will start it automatically)
+	uid := os.Getuid()
 	// #nosec G204 - plistPath is constructed from user home directory, not user input
-	cmd := exec.Command("launchctl", "load", m.plistPath)
+	cmd := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), m.plistPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to load agent: %s: %w", string(output), err)
+		// Ignore error if already bootstrapped
+		if !strings.Contains(string(output), "already bootstrapped") && !strings.Contains(string(output), "already loaded") {
+			return fmt.Errorf("failed to install agent: %s: %w", string(output), err)
+		}
 	}
 
 	return nil
@@ -115,11 +120,13 @@ func (m *LaunchdManager) Install() error {
 
 // Uninstall removes the launchd user agent.
 func (m *LaunchdManager) Uninstall() error {
-	// Unload the agent first
 	installed, installErr := m.IsInstalled()
 	if installErr == nil && installed {
+		uid := os.Getuid()
+
+		// Bootout the agent (this stops and unloads it)
 		// #nosec G204 - plistPath is constructed from user home directory, not user input
-		cmd := exec.Command("launchctl", "unload", m.plistPath)
+		cmd := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", uid), m.plistPath)
 		_ = cmd.Run() //nolint:errcheck // Ignore error - might not be loaded
 	}
 
@@ -143,21 +150,46 @@ func (m *LaunchdManager) IsInstalled() (bool, error) {
 	return true, nil
 }
 
-// Start starts the launchd agent.
+// Start starts the launchd agent (used internally by Restart).
 func (m *LaunchdManager) Start() error {
-	cmd := exec.Command("launchctl", "start", launchdLabel)
+	uid := os.Getuid()
+	// #nosec G204 - plistPath is constructed from user home directory, not user input
+	cmd := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), m.plistPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to start agent: %s: %w", string(output), err)
+		// Ignore error if already bootstrapped
+		if !strings.Contains(string(output), "already bootstrapped") && !strings.Contains(string(output), "already loaded") {
+			return fmt.Errorf("failed to start agent: %s: %w", string(output), err)
+		}
 	}
 	return nil
 }
 
-// Stop stops the launchd agent.
+// Stop stops the launchd agent (used internally by Restart and Uninstall).
+// On macOS with KeepAlive, we can't truly "stop" without unloading, so this just bootouts.
 func (m *LaunchdManager) Stop() error {
-	cmd := exec.Command("launchctl", "stop", launchdLabel)
+	uid := os.Getuid()
+	// #nosec G204 - plistPath is constructed from user home directory, not user input
+	cmd := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", uid), m.plistPath)
+	_ = cmd.Run() //nolint:errcheck // Ignore error - might not be loaded
+	return nil
+}
+
+// Restart restarts the launchd agent.
+func (m *LaunchdManager) Restart() error {
+	uid := os.Getuid()
+
+	// Bootout (stop and unload)
+	// #nosec G204 - plistPath is constructed from user home directory, not user input
+	cmd := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", uid), m.plistPath)
+	_ = cmd.Run() //nolint:errcheck // Ignore error - might not be loaded
+
+	// Bootstrap again (will start due to RunAtLoad)
+	// #nosec G204 - plistPath is constructed from user home directory, not user input
+	cmd = exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), m.plistPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to stop agent: %s: %w", string(output), err)
+		return fmt.Errorf("failed to restart agent: %s: %w", string(output), err)
 	}
+
 	return nil
 }
 
@@ -176,6 +208,7 @@ func (m *LaunchdManager) Status() (ServiceStatus, error) {
 	}
 
 	// Check if running
+	// Modern launchctl outputs JSON, older versions output tab-separated
 	cmd := exec.Command("launchctl", "list", launchdLabel)
 	output, err := cmd.Output()
 	if err != nil {
@@ -183,15 +216,35 @@ func (m *LaunchdManager) Status() (ServiceStatus, error) {
 		return status, nil
 	}
 
-	// Parse output to get PID
+	outputStr := string(output)
+
+	// Try to parse as JSON first (modern macOS)
+	// JSON format: {"PID" = 12345; ...} or {"PID": 12345, ...}
+	if strings.Contains(outputStr, `"PID"`) {
+		// Extract PID from JSON-like output
+		// Look for "PID" = <number> or "PID": <number>
+		pidPattern := `"PID"\s*[=:]\s*(\d+)`
+		re := regexp.MustCompile(pidPattern)
+		matches := re.FindStringSubmatch(outputStr)
+		if len(matches) > 1 {
+			if pid, err := strconv.Atoi(matches[1]); err == nil && pid > 0 {
+				status.Running = true
+				status.PID = pid
+				return status, nil
+			}
+		}
+	}
+
+	// Fallback: Try to parse as tab-separated (older macOS)
 	// Format: PID	Status	Label
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(outputStr, "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) >= 1 && fields[0] != "-" {
-			if pid, err := strconv.Atoi(fields[0]); err == nil {
+			if pid, err := strconv.Atoi(fields[0]); err == nil && pid > 0 {
 				status.Running = true
 				status.PID = pid
+				return status, nil
 			}
 		}
 	}

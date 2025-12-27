@@ -109,16 +109,6 @@ func (m *mockCommandRunner) setCommandConfig(fn func(cmd *mockCommand)) {
 	m.commandConfigFn = fn
 }
 
-// getLastCommand returns the last created command.
-func (m *mockCommandRunner) getLastCommand() *mockCommand {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.commands) == 0 {
-		return nil
-	}
-	return m.commands[len(m.commands)-1]
-}
-
 // SetEnv implements Command.
 func (c *mockCommand) SetEnv(env []string) {
 	c.mu.Lock()

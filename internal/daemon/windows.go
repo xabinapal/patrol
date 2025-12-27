@@ -38,13 +38,23 @@ func (m *WindowsManager) Install() error {
 		return fmt.Errorf("failed to create scheduled task: %s: %w", string(output), err)
 	}
 
-	// Start the task immediately
+	// Enable and start the task
+	if err := m.enable(); err != nil {
+		return fmt.Errorf("failed to enable task: %w", err)
+	}
+
 	return m.Start()
 }
 
 // Uninstall removes the scheduled task.
 func (m *WindowsManager) Uninstall() error {
-	// Stop the task first (ignore error - might not be running)
+	// Disable and stop the task first
+	if err := m.disable(); err != nil {
+		// Ignore error - task might not be enabled
+		_ = err
+	}
+
+	// Stop the task (ignore error - might not be running)
 	//nolint:errcheck // Best effort to stop before uninstall
 	_ = m.Stop()
 
@@ -70,6 +80,12 @@ func (m *WindowsManager) IsInstalled() (bool, error) {
 
 // Start runs the scheduled task.
 func (m *WindowsManager) Start() error {
+	// Enable the task first
+	if err := m.enable(); err != nil {
+		return fmt.Errorf("failed to enable task: %w", err)
+	}
+
+	// Run the task
 	// #nosec G204 - schtasks.exe is a Windows system utility, args are controlled
 	cmd := exec.Command("schtasks.exe", "/run", "/tn", taskName)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -80,10 +96,32 @@ func (m *WindowsManager) Start() error {
 
 // Stop ends the scheduled task.
 func (m *WindowsManager) Stop() error {
+	// End the task first (ignore error - might not be running)
 	// #nosec G204 - schtasks.exe is a Windows system utility, args are controlled
 	cmd := exec.Command("schtasks.exe", "/end", "/tn", taskName)
 	//nolint:errcheck // Ignore error - task might not be running
 	_ = cmd.Run()
+
+	// Disable the task
+	if err := m.disable(); err != nil {
+		return fmt.Errorf("failed to disable task: %w", err)
+	}
+
+	return nil
+}
+
+// Restart restarts the scheduled task.
+func (m *WindowsManager) Restart() error {
+	// Stop first
+	if err := m.Stop(); err != nil {
+		return fmt.Errorf("failed to stop task: %w", err)
+	}
+
+	// Start again
+	if err := m.Start(); err != nil {
+		return fmt.Errorf("failed to start task: %w", err)
+	}
+
 	return nil
 }
 
@@ -115,4 +153,24 @@ func (m *WindowsManager) Status() (ServiceStatus, error) {
 // ServiceFilePath returns the task name.
 func (m *WindowsManager) ServiceFilePath() string {
 	return fmt.Sprintf("Task Scheduler: %s", taskName)
+}
+
+// enable enables the scheduled task.
+func (m *WindowsManager) enable() error {
+	// #nosec G204 - schtasks.exe is a Windows system utility, args are controlled
+	cmd := exec.Command("schtasks.exe", "/change", "/tn", taskName, "/enable")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to enable task: %s: %w", string(output), err)
+	}
+	return nil
+}
+
+// disable disables the scheduled task.
+func (m *WindowsManager) disable() error {
+	// #nosec G204 - schtasks.exe is a Windows system utility, args are controlled
+	cmd := exec.Command("schtasks.exe", "/change", "/tn", taskName, "/disable")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to disable task: %s: %w", string(output), err)
+	}
+	return nil
 }

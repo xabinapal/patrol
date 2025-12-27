@@ -25,6 +25,9 @@ func (m *SystemdManager) Start() error { return ErrServiceNotSupported }
 // Stop is not supported on this platform.
 func (m *SystemdManager) Stop() error { return ErrServiceNotSupported }
 
+// Restart is not supported on this platform.
+func (m *SystemdManager) Restart() error { return ErrServiceNotSupported }
+
 // Status is not supported on this platform.
 func (m *SystemdManager) Status() (ServiceStatus, error) {
 	return ServiceStatus{}, ErrServiceNotSupported

@@ -92,28 +92,29 @@ patrol login
 
 You can run the daemon in two ways:
 
-**Option 1: Simple background process**
+**Option 1: Run directly**
 ```bash
-# Start the daemon in the background
-patrol daemon start
+# Run the daemon in the foreground
+patrol daemon run
+# (Stop with Ctrl+C when needed)
 
 # Check daemon status
 patrol daemon status
-
-# Stop the daemon
-patrol daemon stop
 ```
 
 **Option 2: System service (recommended)**
 ```bash
 # Install as a system service (starts automatically on login)
-patrol daemon install
+patrol daemon service install
+
+# Restart the service if needed
+patrol daemon service restart
 
 # Check status
 patrol daemon status
 
 # Uninstall the service
-patrol daemon uninstall
+patrol daemon service uninstall
 ```
 
 ## Configuration
@@ -175,13 +176,11 @@ revoke_on_logout: true
 | Command | Description |
 |---------|-------------|
 | `patrol daemon run` | Run the renewal daemon in foreground |
-| `patrol daemon start` | Start the daemon as a background process |
-| `patrol daemon stop` | Stop the running daemon |
-| `patrol daemon status` | Check daemon and service status |
-| `patrol daemon install` | Install as a system service (launchd/systemd/Task Scheduler) |
-| `patrol daemon uninstall` | Uninstall the system service |
-| `patrol daemon service-start` | Start the installed system service |
-| `patrol daemon service-stop` | Stop the installed system service |
+| `patrol daemon status` | Check if the daemon process is running |
+| `patrol daemon service install` | Install as a system service (launchd/systemd/Task Scheduler) |
+| `patrol daemon service restart` | Restart the installed system service |
+| `patrol daemon service status` | Check the system service status |
+| `patrol daemon service uninstall` | Uninstall the system service |
 
 ### Vault CLI Passthrough
 

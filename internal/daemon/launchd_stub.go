@@ -25,6 +25,9 @@ func (m *LaunchdManager) Start() error { return ErrServiceNotSupported }
 // Stop is not supported on this platform.
 func (m *LaunchdManager) Stop() error { return ErrServiceNotSupported }
 
+// Restart is not supported on this platform.
+func (m *LaunchdManager) Restart() error { return ErrServiceNotSupported }
+
 // Status is not supported on this platform.
 func (m *LaunchdManager) Status() (ServiceStatus, error) {
 	return ServiceStatus{}, ErrServiceNotSupported

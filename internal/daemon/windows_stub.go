@@ -25,6 +25,9 @@ func (m *WindowsManager) Start() error { return ErrServiceNotSupported }
 // Stop is not supported on this platform.
 func (m *WindowsManager) Stop() error { return ErrServiceNotSupported }
 
+// Restart is not supported on this platform.
+func (m *WindowsManager) Restart() error { return ErrServiceNotSupported }
+
 // Status is not supported on this platform.
 func (m *WindowsManager) Status() (ServiceStatus, error) {
 	return ServiceStatus{}, ErrServiceNotSupported

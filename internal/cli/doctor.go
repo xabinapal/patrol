@@ -532,7 +532,7 @@ func (cli *CLI) checkDaemonStatus() CheckResult {
 		Name:    "Daemon",
 		Status:  CheckWarning,
 		Message: "not running",
-		Fix:     "Run 'patrol daemon start' to enable automatic token renewal",
+		Fix:     "Run 'patrol daemon service install' to install as a service, or 'patrol daemon run' to run manually",
 	}
 }
 

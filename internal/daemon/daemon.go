@@ -29,6 +29,7 @@ type connectionBackoff struct {
 // Daemon manages automatic token renewal.
 type Daemon struct {
 	config       *config.Config
+	configPath   string // Path to the config file for reloading
 	keyring      keyring.Store
 	logger       *Logger
 	healthServer *HealthServer
@@ -55,8 +56,12 @@ func New(cfg *config.Config, kr keyring.Store) *Daemon {
 	// Create notifier based on config
 	notifier := notify.New(cfg.Daemon.Notifications)
 
+	// Get config file path (use default if not set in config)
+	configPath := config.GetPaths().ConfigFile
+
 	return &Daemon{
 		config:       cfg,
+		configPath:   configPath,
 		keyring:      kr,
 		logger:       logger,
 		notifier:     notifier,
@@ -91,6 +96,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.mu.Unlock()
 	}()
 
+	// Check if another instance is already running
+	if IsRunningFromPID(d.config) {
+		return fmt.Errorf("daemon is already running (another instance detected)")
+	}
+
 	// Check keyring availability
 	if err := d.keyring.IsAvailable(); err != nil {
 		return fmt.Errorf("keyring not available: %w", err)
@@ -101,12 +111,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.logger.Info(fmt.Sprintf("Renewal threshold: %.0f%%", d.config.Daemon.RenewThreshold*100))
 	d.logger.Info(fmt.Sprintf("Minimum TTL for renewal: %s", d.config.Daemon.MinRenewTTL))
 
-	// Write PID file for daemon tracking
+	// Write PID file for daemon tracking (with file locking to prevent race conditions)
 	if err := d.writePIDFile(); err != nil {
-		d.logger.Warn(fmt.Sprintf("failed to write PID file: %v", err))
-	} else {
-		defer d.removePIDFile()
+		return fmt.Errorf("failed to acquire daemon lock (another instance may be starting): %w", err)
 	}
+	defer d.removePIDFile()
 
 	// Start health server if configured
 	if d.healthServer != nil {
@@ -153,6 +162,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.logger.Info(fmt.Sprintf("Received signal %v, shutting down", sig))
 			return nil
 		case <-ticker.C:
+			d.logger.Info("Starting token renewal check")
 			d.checkAndRenewTokens(ctx)
 		}
 	}
@@ -175,90 +185,150 @@ func (d *Daemon) IsRunning() bool {
 	return d.running
 }
 
+// reloadConfig reloads the configuration from disk.
+// Returns the loaded config or the previous config if reload fails.
+func (d *Daemon) reloadConfig() *config.Config {
+	newCfg, err := config.LoadFrom(d.configPath)
+	if err != nil {
+		d.logger.Warn(fmt.Sprintf("Failed to reload config: %v, using previous config", err))
+		return d.config
+	}
+
+	// Update notifier if notification settings changed
+	if newCfg.Daemon.Notifications != d.config.Daemon.Notifications {
+		d.notifier = notify.New(newCfg.Daemon.Notifications)
+		d.logger.Debug("Notification settings updated")
+	}
+
+	// Log if profiles were added or removed
+	oldProfileNames := make(map[string]bool, len(d.config.Connections))
+	for _, conn := range d.config.Connections {
+		oldProfileNames[conn.Name] = true
+	}
+
+	for _, conn := range newCfg.Connections {
+		if !oldProfileNames[conn.Name] {
+			d.logger.Info(fmt.Sprintf("Detected new profile: %s", conn.Name))
+		}
+		delete(oldProfileNames, conn.Name) // Remove found profiles
+	}
+
+	// Remaining profiles in oldProfileNames were removed
+	for name := range oldProfileNames {
+		d.logger.Info(fmt.Sprintf("Profile removed from config: %s", name))
+	}
+
+	d.config = newCfg
+	return newCfg
+}
+
 // checkAndRenewTokens checks all stored tokens and renews those that need it.
 func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
-	tokensManaged := 0
+	// Reload config to detect new profiles
+	cfg := d.reloadConfig()
 
-	for _, conn := range d.config.Connections {
+	tokensChecked := 0
+	tokensRenewed := 0
+	tokensSkipped := 0
+	profilesWithoutTokens := 0
+
+	for _, conn := range cfg.Connections {
 		prof := &profile.Profile{Connection: &conn}
 
 		// Check if token exists for this profile
 		if !prof.HasToken(d.keyring) {
-			continue // No token for this profile
+			d.logger.Debug(fmt.Sprintf("Profile %s: no token stored, skipping", conn.Name))
+			profilesWithoutTokens++
+			continue
 		}
 
-		tokensManaged++
+		tokensChecked++
 
 		// Look up token to get current TTL
 		lookupData, err := prof.LookupToken(ctx, d.keyring)
 		if err != nil {
-			d.logger.Error(fmt.Sprintf("Error looking up token for %s: %v", conn.Name, err))
+			d.logger.Error(fmt.Sprintf("Profile %s: error looking up token: %v", conn.Name, err))
 			if d.healthServer != nil {
 				d.healthServer.RecordError()
 			}
 			continue
 		}
 
-		d.logger.Debug(fmt.Sprintf("Token for %s: TTL=%ds, Renewable=%v", conn.Name, lookupData.TTL, lookupData.Renewable))
-
 		// Check if token needs renewal
-		minTTL := d.config.Daemon.MinRenewTTL
-		threshold := d.config.Daemon.RenewThreshold
-		if token.NeedsRenewalFromLookup(lookupData, threshold, minTTL) {
-			if !lookupData.Renewable {
-				d.logger.Warn(fmt.Sprintf("Token for %s needs renewal but is not renewable (TTL: %ds)",
-					conn.Name, lookupData.TTL))
-				continue
-			}
+		minTTL := cfg.Daemon.MinRenewTTL
+		threshold := cfg.Daemon.RenewThreshold
+		needsRenewal := token.NeedsRenewalFromLookup(lookupData, threshold, minTTL)
 
-			// Check if we should skip due to backoff from previous failures
-			if d.shouldSkipDueToBackoff(conn.Name) {
-				backoff := d.getBackoff(conn.Name)
-				d.logger.Debug(fmt.Sprintf("Skipping renewal for %s due to backoff (retry in %s)",
-					conn.Name, time.Until(backoff.nextRetry).Round(time.Second)))
-				continue
-			}
+		// Log token status
+		ttlDuration := time.Duration(lookupData.TTL) * time.Second
+		if !needsRenewal {
+			d.logger.Info(fmt.Sprintf("Profile %s: token OK (TTL: %s, renewable: %v)", conn.Name, ttlDuration, lookupData.Renewable))
+			tokensSkipped++
+			continue
+		}
 
-			d.logger.Info(fmt.Sprintf("Renewing token for %s (current TTL: %ds)", conn.Name, lookupData.TTL))
+		// Token needs renewal
+		if !lookupData.Renewable {
+			d.logger.Warn(fmt.Sprintf("Profile %s: token needs renewal but is not renewable (TTL: %s)",
+				conn.Name, ttlDuration))
+			tokensSkipped++
+			continue
+		}
 
-			_, err := prof.RenewToken(ctx, d.keyring, "")
-			if err != nil {
-				d.logger.Error(fmt.Sprintf("Error renewing token for %s: %v", conn.Name, err))
-				d.recordRenewalFailure(conn.Name)
-				if d.healthServer != nil {
-					d.healthServer.RecordError()
-				}
-				// Send failure notification
-				if notifyErr := d.notifier.NotifyFailure(conn.Name, err); notifyErr != nil {
-					d.logger.Debug(fmt.Sprintf("Failed to send notification: %v", notifyErr))
-				}
-				continue
-			}
+		// Check if we should skip due to backoff from previous failures
+		if d.shouldSkipDueToBackoff(conn.Name) {
+			backoff := d.getBackoff(conn.Name)
+			retryIn := time.Until(backoff.nextRetry).Round(time.Second)
+			d.logger.Info(fmt.Sprintf("Profile %s: skipping renewal due to backoff (retry in %s, TTL: %s)",
+				conn.Name, retryIn, ttlDuration))
+			tokensSkipped++
+			continue
+		}
 
-			// Success - reset backoff state
-			d.resetBackoff(conn.Name)
+		d.logger.Info(fmt.Sprintf("Profile %s: renewing token (current TTL: %s)", conn.Name, ttlDuration))
 
-			// Get new TTL for notification
-			newTTL := time.Duration(lookupData.CreationTTL) * time.Second // Use creation TTL as estimate
-			if newLookup, err := prof.LookupToken(ctx, d.keyring); err == nil {
-				newTTL = time.Duration(newLookup.TTL) * time.Second
-			}
-
-			d.logger.Info(fmt.Sprintf("Successfully renewed token for %s", conn.Name))
+		_, err = prof.RenewToken(ctx, d.keyring, "")
+		if err != nil {
+			d.logger.Error(fmt.Sprintf("Profile %s: renewal failed: %v", conn.Name, err))
+			d.recordRenewalFailure(conn.Name)
 			if d.healthServer != nil {
-				d.healthServer.RecordRenewal()
+				d.healthServer.RecordError()
 			}
-
-			// Send success notification
-			if notifyErr := d.notifier.NotifyRenewal(conn.Name, newTTL); notifyErr != nil {
+			// Send failure notification
+			if notifyErr := d.notifier.NotifyFailure(conn.Name, err); notifyErr != nil {
 				d.logger.Debug(fmt.Sprintf("Failed to send notification: %v", notifyErr))
 			}
+			continue
+		}
+
+		// Success - reset backoff state
+		d.resetBackoff(conn.Name)
+
+		// Get new TTL for notification
+		newTTL := time.Duration(lookupData.CreationTTL) * time.Second // Use creation TTL as estimate
+		if newLookup, err := prof.LookupToken(ctx, d.keyring); err == nil {
+			newTTL = time.Duration(newLookup.TTL) * time.Second
+		}
+
+		d.logger.Info(fmt.Sprintf("Profile %s: token renewed successfully (new TTL: %s)", conn.Name, newTTL))
+		tokensRenewed++
+		if d.healthServer != nil {
+			d.healthServer.RecordRenewal()
+		}
+
+		// Send success notification
+		if notifyErr := d.notifier.NotifyRenewal(conn.Name, newTTL); notifyErr != nil {
+			d.logger.Debug(fmt.Sprintf("Failed to send notification: %v", notifyErr))
 		}
 	}
 
+	// Log summary of the check
+	d.logger.Info(fmt.Sprintf("Check complete: %d tokens checked, %d renewed, %d skipped, %d profiles without tokens",
+		tokensChecked, tokensRenewed, tokensSkipped, profilesWithoutTokens))
+
 	// Record the check with the health server
 	if d.healthServer != nil {
-		d.healthServer.RecordCheck(tokensManaged)
+		d.healthServer.RecordCheck(tokensChecked)
 	}
 }
 
@@ -316,6 +386,7 @@ func (d *Daemon) resetBackoff(connName string) {
 }
 
 // writePIDFile writes the current process ID to the configured PID file.
+// It uses exclusive file creation to prevent multiple instances from starting simultaneously.
 func (d *Daemon) writePIDFile() error {
 	pidFile := d.config.Daemon.PIDFile
 	if pidFile == "" {
@@ -329,8 +400,54 @@ func (d *Daemon) writePIDFile() error {
 		return err
 	}
 
-	pid := os.Getpid()
-	return os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0600)
+	// Retry logic: try up to 3 times to handle race conditions
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Try to create the PID file exclusively (fails if it already exists)
+		// #nosec G304 - pidFile is from config paths (controlled)
+		file, err := os.OpenFile(pidFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			if !os.IsExist(err) {
+				return fmt.Errorf("failed to create PID file: %w", err)
+			}
+
+			// PID file exists - check if the process is still running
+			existingPID, readErr := GetPID(d.config)
+			if readErr != nil {
+				// PID file exists but can't read it - remove and retry
+				_ = os.Remove(pidFile)
+				continue
+			}
+
+			// Check if the existing process is still running
+			if IsRunningFromPID(d.config) {
+				return fmt.Errorf("daemon is already running (PID: %d)", existingPID)
+			}
+
+			// Process is not running - remove stale PID file and retry
+			_ = os.Remove(pidFile)
+			continue
+		}
+
+		// Successfully created the file - write PID
+		defer file.Close()
+
+		pid := os.Getpid()
+		if _, err := file.WriteString(strconv.Itoa(pid)); err != nil {
+			_ = os.Remove(pidFile)
+			return fmt.Errorf("failed to write PID: %w", err)
+		}
+
+		// Sync to disk to ensure the file is written
+		if err := file.Sync(); err != nil {
+			_ = os.Remove(pidFile)
+			return fmt.Errorf("failed to sync PID file: %w", err)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("failed to acquire daemon lock after %d attempts", maxRetries)
 }
 
 // removePIDFile removes the PID file.

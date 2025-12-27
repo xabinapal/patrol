@@ -138,12 +138,48 @@ func (m *SystemdManager) IsInstalled() (bool, error) {
 
 // Start starts the systemd service.
 func (m *SystemdManager) Start() error {
-	return exec.Command("systemctl", "--user", "start", "patrol.service").Run()
+	// Enable the service first
+	if err := exec.Command("systemctl", "--user", "enable", "patrol.service").Run(); err != nil {
+		return fmt.Errorf("failed to enable service: %w", err)
+	}
+
+	// Start the service
+	if err := exec.Command("systemctl", "--user", "start", "patrol.service").Run(); err != nil {
+		return fmt.Errorf("failed to start service: %w", err)
+	}
+
+	return nil
 }
 
 // Stop stops the systemd service.
 func (m *SystemdManager) Stop() error {
-	return exec.Command("systemctl", "--user", "stop", "patrol.service").Run()
+	// Stop the service first
+	if err := exec.Command("systemctl", "--user", "stop", "patrol.service").Run(); err != nil {
+		// Ignore error - service might not be running
+		_ = err
+	}
+
+	// Disable the service
+	if err := exec.Command("systemctl", "--user", "disable", "patrol.service").Run(); err != nil {
+		return fmt.Errorf("failed to disable service: %w", err)
+	}
+
+	return nil
+}
+
+// Restart restarts the systemd service.
+func (m *SystemdManager) Restart() error {
+	// Restart the service (systemctl restart handles stop+start)
+	if err := exec.Command("systemctl", "--user", "restart", "patrol.service").Run(); err != nil {
+		return fmt.Errorf("failed to restart service: %w", err)
+	}
+
+	// Ensure it's enabled
+	if err := exec.Command("systemctl", "--user", "enable", "patrol.service").Run(); err != nil {
+		return fmt.Errorf("failed to enable service: %w", err)
+	}
+
+	return nil
 }
 
 // Status returns the current status of the systemd service.

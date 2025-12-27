@@ -8,16 +8,18 @@ import (
 
 // ServiceManager provides service installation and management.
 type ServiceManager interface {
-	// Install installs the service.
+	// Install installs and starts the service.
 	Install() error
-	// Uninstall removes the service.
+	// Uninstall stops and removes the service.
 	Uninstall() error
 	// IsInstalled checks if the service is installed.
 	IsInstalled() (bool, error)
-	// Start starts the service.
+	// Start starts the service (used internally by Install and Restart).
 	Start() error
-	// Stop stops the service.
+	// Stop stops the service (used internally by Uninstall and Restart).
 	Stop() error
+	// Restart restarts the service (only for installed services).
+	Restart() error
 	// Status returns the service status.
 	Status() (ServiceStatus, error)
 	// ServiceFilePath returns the path to the service definition file.

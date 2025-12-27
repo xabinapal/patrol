@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -49,39 +48,31 @@ When a token is approaching expiration, the daemon will attempt to renew it
 automatically, keeping you logged in without manual intervention.
 
 You can run the daemon in two ways:
-  1. As a simple background process: Use 'daemon start' to run it manually
-  2. As a system service: Use 'daemon install' to install it as a system service
+  1. Run directly in foreground: Use 'daemon run' to run it manually
+  2. As a system service: Use 'daemon service install' to install it as a system service
      (launchd on macOS, systemd on Linux, Task Scheduler on Windows)
 
 Examples:
-  # Run the daemon in the foreground (for testing)
+  # Run the daemon in the foreground (for testing or manual execution)
   patrol daemon run
 
-  # Start the daemon as a background process
-  patrol daemon start
-
   # Install as a system service (starts automatically on login)
-  patrol daemon install
+  patrol daemon service install
 
   # Check daemon status
   patrol daemon status
 
-  # Stop the daemon
-  patrol daemon stop
+  # Restart the system service
+  patrol daemon service restart
 
   # Uninstall the system service
-  patrol daemon uninstall`,
+  patrol daemon service uninstall`,
 	}
 
 	cmd.AddCommand(
 		cli.newDaemonRunCmd(),
-		cli.newDaemonStartCmd(),
-		cli.newDaemonStopCmd(),
 		cli.newDaemonStatusCmd(),
-		cli.newDaemonInstallCmd(),
-		cli.newDaemonUninstallCmd(),
-		cli.newDaemonServiceStartCmd(),
-		cli.newDaemonServiceStopCmd(),
+		cli.newDaemonServiceCmd(),
 	)
 
 	return cmd
@@ -159,111 +150,16 @@ Examples:
 	return cmd
 }
 
-// newDaemonStartCmd creates the daemon start command.
-func (cli *CLI) newDaemonStartCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "start",
-		Short: "Start the daemon in the background",
-		Long: `Start the token renewal daemon as a background process.
-
-The daemon will detach from the terminal and run independently.
-Use 'patrol daemon stop' to stop it.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Check if already running
-			if daemon.IsRunningFromPID(cli.Config) {
-				return fmt.Errorf("daemon is already running")
-			}
-
-			// Get the executable path
-			executable, err := os.Executable()
-			if err != nil {
-				return fmt.Errorf("failed to get executable path: %w", err)
-			}
-
-			// Set up log file
-			paths := config.GetPaths()
-			logFile := filepath.Join(paths.CacheDir, "daemon.log")
-
-			// Ensure cache directory exists
-			if err := os.MkdirAll(paths.CacheDir, 0700); err != nil {
-				return fmt.Errorf("failed to create cache directory: %w", err)
-			}
-
-			// Start the daemon process
-			// #nosec G204 - executable is from os.Executable() (trusted), args are static strings, logFile is from config paths
-			daemonCmd := exec.Command(executable, "daemon", "run", "--log", logFile)
-			daemonCmd.Stdout = nil
-			daemonCmd.Stderr = nil
-			daemonCmd.Stdin = nil
-
-			// Detach from parent process (Unix only - Setpgid is not available on Windows)
-			setUnixProcessAttributes(daemonCmd)
-
-			if err := daemonCmd.Start(); err != nil {
-				return fmt.Errorf("failed to start daemon: %w", err)
-			}
-
-			// Capture PID before releasing the process handle
-			pid := daemonCmd.Process.Pid
-
-			// Detach and let it run
-			if err := daemonCmd.Process.Release(); err != nil {
-				return fmt.Errorf("failed to detach daemon: %w", err)
-			}
-
-			fmt.Printf("Daemon started (PID: %d)\n", pid)
-			fmt.Printf("Log file: %s\n", logFile)
-
-			return nil
-		},
-	}
-}
-
-// newDaemonStopCmd creates the daemon stop command.
-func (cli *CLI) newDaemonStopCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "stop",
-		Short: "Stop the running daemon",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			pid, err := daemon.GetPID(cli.Config)
-			if err != nil {
-				if os.IsNotExist(err) {
-					fmt.Println("Daemon is not running (no PID file found)")
-					return nil
-				}
-				return fmt.Errorf("failed to get daemon PID: %w", err)
-			}
-
-			// Find the process
-			process, err := os.FindProcess(pid)
-			if err != nil {
-				return fmt.Errorf("failed to find process %d: %w", pid, err)
-			}
-
-			// Send termination signal
-			if err := process.Signal(getTermSignal()); err != nil {
-				if err.Error() == "os: process already finished" {
-					fmt.Println("Daemon was not running (stale PID file)")
-					// Clean up stale PID file
-					paths := config.GetPaths()
-					pidFile := filepath.Join(paths.DataDir, "patrol.pid")
-					_ = os.Remove(pidFile)
-					return nil
-				}
-				return fmt.Errorf("failed to stop daemon: %w", err)
-			}
-
-			fmt.Printf("Sent stop signal to daemon (PID: %d)\n", pid)
-			return nil
-		},
-	}
-}
-
 // newDaemonStatusCmd creates the daemon status command.
 func (cli *CLI) newDaemonStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Check if the daemon is running",
+		Short: "Check if the daemon process is running",
+		Long: `Check if the daemon process is currently running.
+
+This command checks for a running daemon process by looking for the PID file.
+It does not check the system service status - use 'patrol daemon service status'
+for that information.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := ParseOutputFormat(cli.outputFlag)
 			if err != nil {
@@ -281,22 +177,6 @@ func (cli *CLI) newDaemonStatusCmd() *cobra.Command {
 				}
 			}
 
-			// Get service status if available
-			var serviceInfo *ServiceInfoOutput
-			mgr, err := cli.getServiceManager()
-			if err == nil {
-				status, err := mgr.Status()
-				if err == nil {
-					serviceInfo = &ServiceInfoOutput{
-						Platform:    daemon.ServicePlatformName(),
-						ServiceFile: mgr.ServiceFilePath(),
-						Installed:   status.Installed,
-						Running:     status.Running,
-						PID:         status.PID,
-					}
-				}
-			}
-
 			statusOutput := DaemonStatusOutput{
 				Running: running,
 				PID:     pid,
@@ -305,7 +185,6 @@ func (cli *CLI) newDaemonStatusCmd() *cobra.Command {
 					RenewThreshold: cli.Config.Daemon.RenewThreshold,
 					MinRenewTTL:    cli.Config.Daemon.MinRenewTTL.String(),
 				},
-				Service: serviceInfo,
 			}
 
 			output := NewOutputWriter(format)
@@ -314,23 +193,6 @@ func (cli *CLI) newDaemonStatusCmd() *cobra.Command {
 					fmt.Printf("Daemon is running (PID: %d)\n", pid)
 				} else {
 					fmt.Println("Daemon is not running")
-				}
-
-				if serviceInfo != nil {
-					fmt.Println()
-					fmt.Printf("System service (%s):\n", serviceInfo.Platform)
-					if serviceInfo.Installed {
-						fmt.Printf("  Installed: yes\n")
-						fmt.Printf("  Service file: %s\n", serviceInfo.ServiceFile)
-						if serviceInfo.Running {
-							fmt.Printf("  Running: yes (PID: %d)\n", serviceInfo.PID)
-						} else {
-							fmt.Printf("  Running: no\n")
-						}
-					} else {
-						fmt.Printf("  Installed: no\n")
-						fmt.Printf("  Run 'patrol daemon install' to install as a system service\n")
-					}
 				}
 
 				fmt.Printf("\nDaemon configuration:\n")
@@ -342,20 +204,41 @@ func (cli *CLI) newDaemonStatusCmd() *cobra.Command {
 	}
 }
 
-// newDaemonInstallCmd creates the daemon install command.
-func (cli *CLI) newDaemonInstallCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "install",
-		Short: "Install Patrol as a user service",
-		Long: `Install Patrol as a user-level service that starts automatically on login.
+// newDaemonServiceCmd creates the daemon service command group.
+func (cli *CLI) newDaemonServiceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "service",
+		Short: "Manage the Patrol system service",
+		Long: `Manage the Patrol system service installation and lifecycle.
 
-The service will run 'patrol daemon run' in the background, automatically
+The service runs 'patrol daemon run' in the background, automatically
 renewing your Vault tokens before they expire.
 
 Supported platforms:
   - macOS: launchd user agent
   - Linux: systemd user service
   - Windows: Scheduled Task`,
+	}
+
+	cmd.AddCommand(
+		cli.newDaemonServiceInstallCmd(),
+		cli.newDaemonServiceUninstallCmd(),
+		cli.newDaemonServiceRestartCmd(),
+		cli.newDaemonServiceStatusCmd(),
+	)
+
+	return cmd
+}
+
+// newDaemonServiceInstallCmd creates the daemon service install command.
+func (cli *CLI) newDaemonServiceInstallCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "install",
+		Short: "Install Patrol as a user service",
+		Long: `Install Patrol as a user-level service that starts automatically on login.
+
+The service will run 'patrol daemon run' in the background, automatically
+renewing your Vault tokens before they expire.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr, err := cli.getServiceManager()
 			if err != nil {
@@ -376,17 +259,8 @@ Supported platforms:
 				return fmt.Errorf("failed to install service: %w", err)
 			}
 
-			fmt.Println("Service installed successfully!")
+			fmt.Println("Service installed and started successfully!")
 			fmt.Printf("  Service file: %s\n", mgr.ServiceFilePath())
-
-			// Auto-start the service after installation
-			if err := mgr.Start(); err != nil {
-				fmt.Printf("\nWarning: Failed to start service: %v\n", err)
-				fmt.Println("You can manually start it with 'patrol daemon service-start'")
-			} else {
-				fmt.Println("  Service started automatically")
-			}
-
 			fmt.Println()
 			fmt.Println("The daemon will now start automatically when you log in.")
 			fmt.Println("Use 'patrol daemon status' to check the service status.")
@@ -396,15 +270,14 @@ Supported platforms:
 	}
 }
 
-// newDaemonUninstallCmd creates the daemon uninstall command.
-func (cli *CLI) newDaemonUninstallCmd() *cobra.Command {
+// newDaemonServiceUninstallCmd creates the daemon service uninstall command.
+func (cli *CLI) newDaemonServiceUninstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
 		Short: "Uninstall the Patrol service",
 		Long: `Uninstall the Patrol system service.
 
-This removes the service installation but does not stop a currently running
-daemon process. Use 'patrol daemon stop' to stop a running daemon.`,
+This stops and removes the service installation.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr, err := cli.getServiceManager()
 			if err != nil {
@@ -429,16 +302,15 @@ daemon process. Use 'patrol daemon stop' to stop a running daemon.`,
 	}
 }
 
-// newDaemonServiceStartCmd creates the daemon service-start command.
-func (cli *CLI) newDaemonServiceStartCmd() *cobra.Command {
+// newDaemonServiceRestartCmd creates the daemon service restart command.
+func (cli *CLI) newDaemonServiceRestartCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "service-start",
-		Short: "Start the installed system service",
-		Long: `Start the installed system service.
+		Use:   "restart",
+		Short: "Restart the installed system service",
+		Long: `Restart the installed system service.
 
 This command only works if the service has been installed with
-'patrol daemon install'. For starting a simple background process,
-use 'patrol daemon start' instead.`,
+'patrol daemon service install'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mgr, err := cli.getServiceManager()
 			if err != nil {
@@ -447,46 +319,73 @@ use 'patrol daemon start' instead.`,
 
 			installed, installErr := mgr.IsInstalled()
 			if installErr != nil || !installed {
-				return fmt.Errorf("service is not installed; run 'patrol daemon install' first")
+				return fmt.Errorf("service is not installed; run 'patrol daemon service install' first")
 			}
 
-			if err := mgr.Start(); err != nil {
-				return fmt.Errorf("failed to start service: %w", err)
+			if err := mgr.Restart(); err != nil {
+				return fmt.Errorf("failed to restart service: %w", err)
 			}
 
-			fmt.Println("Service started")
+			fmt.Println("Service restarted")
 			return nil
 		},
 	}
 }
 
-// newDaemonServiceStopCmd creates the daemon service-stop command.
-func (cli *CLI) newDaemonServiceStopCmd() *cobra.Command {
+// newDaemonServiceStatusCmd creates the daemon service status command.
+func (cli *CLI) newDaemonServiceStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "service-stop",
-		Short: "Stop the installed system service",
-		Long: `Stop the installed system service.
+		Use:   "status",
+		Short: "Check the system service status",
+		Long: `Check the status of the Patrol system service.
 
-This command only works if the service has been installed with
-'patrol daemon install'. For stopping a simple background process,
-use 'patrol daemon stop' instead.`,
+This command shows whether the service is installed and running.
+It does not check the daemon process status - use 'patrol daemon status'
+for that information.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := ParseOutputFormat(cli.outputFlag)
+			if err != nil {
+				return err
+			}
+
 			mgr, err := cli.getServiceManager()
 			if err != nil {
 				return err
 			}
 
-			installed, installErr := mgr.IsInstalled()
-			if installErr != nil || !installed {
-				return fmt.Errorf("service is not installed")
+			status, err := mgr.Status()
+			if err != nil {
+				return fmt.Errorf("failed to get service status: %w", err)
 			}
 
-			if err := mgr.Stop(); err != nil {
-				return fmt.Errorf("failed to stop service: %w", err)
+			serviceInfo := &ServiceInfoOutput{
+				Platform:    daemon.ServicePlatformName(),
+				ServiceFile: mgr.ServiceFilePath(),
+				Installed:   status.Installed,
+				Running:     status.Running,
+				PID:         status.PID,
 			}
 
-			fmt.Println("Service stopped")
-			return nil
+			statusOutput := DaemonStatusOutput{
+				Service: serviceInfo,
+			}
+
+			output := NewOutputWriter(format)
+			return output.Write(statusOutput, func() {
+				fmt.Printf("System service (%s):\n", serviceInfo.Platform)
+				if serviceInfo.Installed {
+					fmt.Printf("  Installed: yes\n")
+					fmt.Printf("  Service file: %s\n", serviceInfo.ServiceFile)
+					if serviceInfo.Running {
+						fmt.Printf("  Running: yes (PID: %d)\n", serviceInfo.PID)
+					} else {
+						fmt.Printf("  Running: no\n")
+					}
+				} else {
+					fmt.Printf("  Installed: no\n")
+					fmt.Printf("  Run 'patrol daemon service install' to install as a system service\n")
+				}
+			})
 		},
 	}
 }
