@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/xabito/patrol/blob/main/README.md
+    url: https://github.com/xabinapal/patrol/blob/main/README.md
     about: Please check the documentation before opening an issue
   - name: Security Policy
-    url: https://github.com/xabito/patrol/security/policy
+    url: https://github.com/xabinapal/patrol/security/policy
     about: Review our security policy and how to report vulnerabilities
   - name: Discussions
-    url: https://github.com/xabito/patrol/discussions
+    url: https://github.com/xabinapal/patrol/discussions
     about: Ask questions and discuss ideas with the community

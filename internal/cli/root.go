@@ -78,12 +78,9 @@ func (cli *CLI) addCommands() {
 		cli.newVersionCmd(),
 		cli.newLoginCmd(),
 		cli.newLogoutCmd(),
-		cli.newStatusCmd(),
-		cli.newUseCmd(),
 		cli.newProfileCmd(),
 		cli.newConfigCmd(),
 		cli.newDoctorCmd(),
-		cli.newTokenCmd(),
 		cli.newDaemonCmd(),
 		cli.newTokenHelperCmd(),
 		cli.newCompletionCmd(),
@@ -172,7 +169,7 @@ func (cli *CLI) Execute(ctx context.Context) error {
 // GetCurrentConnection returns the current connection, considering flags and env vars.
 func (cli *CLI) GetCurrentConnection() (*config.Connection, error) {
 	if cli.Config.Current == "" {
-		return nil, errors.New("no active profile configured - use 'patrol profile add' to add a profile, then 'patrol use <profile>' to activate it")
+		return nil, errors.New("no active profile configured - use 'patrol profile add' to add a profile, then 'patrol profile use <profile>' to activate it")
 	}
 
 	return cli.Config.GetCurrentConnection()

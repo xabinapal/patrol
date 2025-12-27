@@ -229,22 +229,22 @@ func TestProfile_Show(t *testing.T) {
 		t.Fatalf("failed to add profile: %v", err)
 	}
 
-	// Show the profile
+	// Show the profile status
 	var stdout, stderr strings.Builder
-	cmd = exec.CommandContext(ctx, binaryPath, "profile", "show", "detailed")
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "status", "detailed")
 	cmd.Env = baseEnv
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to show profile: %v\nstderr: %s", err, stderr.String())
+		t.Fatalf("failed to show profile status: %v\nstderr: %s", err, stderr.String())
 	}
 
 	output := stdout.String()
 	expectedFields := []string{"detailed", "https://detailed.example.com:8200", "admin/team"}
 	for _, field := range expectedFields {
 		if !strings.Contains(output, field) {
-			t.Errorf("expected %q in profile show output, got: %s", field, output)
+			t.Errorf("expected %q in profile status output, got: %s", field, output)
 		}
 	}
 }

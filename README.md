@@ -72,7 +72,7 @@ Your token is now securely stored and will be automatically used for subsequent 
 # All vault commands work through patrol
 patrol kv get secret/myapp
 patrol kv put secret/myapp password=supersecret
-patrol status
+patrol profile status
 ```
 
 ### 4. Switch Between Profiles
@@ -82,7 +82,7 @@ patrol status
 patrol profile add prod --address=https://vault.prod.example.com:8200
 
 # Switch to it
-patrol use prod
+patrol profile use prod
 
 # Login to the new profile
 patrol login
@@ -159,8 +159,8 @@ revoke_on_logout: true
 |---------|-------------|
 | `patrol login [args]` | Authenticate to Vault and securely store the token |
 | `patrol logout [profile]` | Remove stored token and optionally revoke it |
-| `patrol status` | Show current authentication status |
-| `patrol use <profile>` | Switch to a different profile |
+| `patrol profile status [name]` | Show comprehensive profile status and information |
+| `patrol profile use <profile>` | Switch to a different profile |
 
 ### Profile Management
 
@@ -169,7 +169,6 @@ revoke_on_logout: true
 | `patrol profile list` | List all configured profiles |
 | `patrol profile add <name>` | Add a new connection profile |
 | `patrol profile remove <name>` | Remove a profile |
-| `patrol profile show [name]` | Show profile details |
 
 ### Daemon Commands
 

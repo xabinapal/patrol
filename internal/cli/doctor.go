@@ -225,7 +225,7 @@ func (cli *CLI) checkConfigFile() CheckResult {
 			Name:    "Configuration file",
 			Status:  CheckWarning,
 			Message: "not found",
-			Fix:     "Run 'patrol config init' to create configuration",
+			Fix:     "Run 'patrol profile add' to create a profile and configuration",
 		}
 	}
 
@@ -279,7 +279,7 @@ func (cli *CLI) checkProfileConfigured() CheckResult {
 			Name:    "Profile",
 			Status:  CheckError,
 			Message: "no profiles configured",
-			Fix:     "Run 'patrol config init' or 'patrol profile add' to create a profile",
+			Fix:     "Run 'patrol profile add' to create a profile",
 		}
 	}
 
@@ -288,7 +288,7 @@ func (cli *CLI) checkProfileConfigured() CheckResult {
 			Name:    "Profile",
 			Status:  CheckWarning,
 			Message: "no active profile selected",
-			Fix:     "Run 'patrol use <name>' to select a profile",
+			Fix:     "Run 'patrol profile use <name>' to select a profile",
 		}
 	}
 

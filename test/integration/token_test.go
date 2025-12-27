@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// TestToken_InfoAfterLogin tests that patrol token info works after login.
+// TestToken_InfoAfterLogin tests that patrol profile status works after login.
 func TestToken_InfoAfterLogin(t *testing.T) {
 	env := VaultTestEnv()
 	env.SkipIfNotAvailable(t)
@@ -82,8 +82,8 @@ connections:
 		t.Fatalf("login failed: %v\nstderr: %s", err, stderr.String())
 	}
 
-	// Step 2: Run patrol token info
-	cmd = exec.CommandContext(ctx, binaryPath, "token", "info")
+	// Step 2: Run patrol profile status (includes token info)
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "status")
 	cmd.Env = testEnv
 	stdout.Reset()
 	stderr.Reset()
@@ -91,11 +91,11 @@ connections:
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("token info failed: %v\nstderr: %s", err, stderr.String())
+		t.Fatalf("profile status failed: %v\nstderr: %s", err, stderr.String())
 	}
 
 	output := stdout.String()
-	t.Logf("token info output: %s", output)
+	t.Logf("profile status output: %s", output)
 
 	// Verify output contains expected fields
 	expectedFields := []string{"accessor", "policies", "ttl"}
@@ -106,7 +106,7 @@ connections:
 	}
 }
 
-// TestToken_RenewAfterLogin tests that patrol token renew works after login.
+// TestToken_RenewAfterLogin tests that patrol profile renew works after login.
 func TestToken_RenewAfterLogin(t *testing.T) {
 	env := VaultTestEnv()
 	env.SkipIfNotAvailable(t)
@@ -175,8 +175,8 @@ connections:
 		t.Fatalf("login failed: %v", err)
 	}
 
-	// Step 2: Run patrol token renew
-	cmd = exec.CommandContext(ctx, binaryPath, "token", "renew")
+	// Step 2: Run patrol profile renew
+	cmd = exec.CommandContext(ctx, binaryPath, "profile", "renew")
 	cmd.Env = testEnv
 	stdout.Reset()
 	stderr.Reset()
@@ -184,11 +184,11 @@ connections:
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("token renew failed: %v\nstderr: %s", err, stderr.String())
+		t.Fatalf("profile renew failed: %v\nstderr: %s", err, stderr.String())
 	}
 
 	output := stdout.String()
-	t.Logf("token renew output: %s", output)
+	t.Logf("profile renew output: %s", output)
 
 	// Verify renewal was successful
 	if !strings.Contains(output, "renewed") && !strings.Contains(output, "Renewed") &&
@@ -235,8 +235,8 @@ connections:
 
 	binaryPath := PatrolBinaryPath(t)
 
-	// Run token info without login - should fail
-	cmd := exec.CommandContext(ctx, binaryPath, "token", "info")
+	// Run profile status without login - should show no token
+	cmd := exec.CommandContext(ctx, binaryPath, "profile", "status")
 	cmd.Env = testEnv
 
 	var stdout, stderr strings.Builder
@@ -245,7 +245,7 @@ connections:
 
 	err := cmd.Run()
 	output := stdout.String() + stderr.String()
-	t.Logf("token info (no login) output: %s", output)
+	t.Logf("profile status (no login) output: %s", output)
 
 	// Should fail or show "not logged in" / "no token" message
 	if err == nil {

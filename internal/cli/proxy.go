@@ -14,14 +14,14 @@ import (
 // This prevents bugs where new commands are added to addCommands() but not here.
 var patrolCommands = map[string]bool{
 	// Core commands
-	"version": true, "login": true, "logout": true, "status": true,
+	"login": true, "logout": true, "daemon": true,
 	// Profile management
-	"use": true, "profile": true,
+	"profile": true,
 	// Token helper commands (used by Vault)
 	"get": true, "store": true, "erase": true,
 	// Additional commands
-	"config": true, "doctor": true, "token": true,
-	"daemon": true, "help": true, "completion": true,
+	"config": true, "doctor": true,
+	"help": true, "version": true, "completion": true,
 }
 
 // ShouldProxy checks if the command should be proxied to vault/bao.

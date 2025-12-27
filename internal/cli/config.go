@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,162 +53,16 @@ func (cli *CLI) newConfigCmd() *cobra.Command {
 		Short: "Manage Patrol configuration",
 		Long: `Manage Patrol configuration files and settings.
 
-Use 'patrol config init' for interactive setup.
 Use 'patrol config path' to see configuration file locations.
-Use 'patrol config edit' to open the configuration in your editor.`,
+Use 'patrol config edit' to open the configuration in your editor.
+Use 'patrol config validate' to validate the configuration file.`,
 	}
 
 	cmd.AddCommand(
-		cli.newConfigInitCmd(),
 		cli.newConfigPathCmd(),
 		cli.newConfigEditCmd(),
 		cli.newConfigValidateCmd(),
 	)
-
-	return cmd
-}
-
-// newConfigInitCmd creates the config init command.
-func (cli *CLI) newConfigInitCmd() *cobra.Command {
-	var nonInteractive bool
-	var address, name, serverType string
-
-	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Initialize Patrol configuration interactively",
-		Long: `Initialize Patrol configuration with an interactive wizard.
-
-This command guides you through setting up your first Vault/OpenBao
-connection profile. You can also use flags for non-interactive setup.
-
-Examples:
-  # Interactive setup
-  patrol config init
-
-  # Non-interactive setup
-  patrol config init --address https://vault.example.com:8200 --name prod`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			reader := bufio.NewReader(os.Stdin)
-			var err error
-
-			// Check if config already exists with profiles
-			if len(cli.Config.Connections) > 0 && !nonInteractive {
-				fmt.Printf("Configuration already exists with %d profile(s).\n", len(cli.Config.Connections))
-				fmt.Print("Add another profile? [y/N]: ")
-				var response string
-				response, err = reader.ReadString('\n')
-				if err != nil {
-					return fmt.Errorf("failed to read input: %w", err)
-				}
-				response = strings.TrimSpace(strings.ToLower(response))
-				if response != "y" && response != "yes" {
-					fmt.Println("Aborted.")
-					return nil
-				}
-			}
-
-			// Get address
-			if address == "" && !nonInteractive {
-				fmt.Print("Vault/OpenBao address (e.g., https://vault.example.com:8200): ")
-				address, err = reader.ReadString('\n')
-				if err != nil {
-					return fmt.Errorf("failed to read address: %w", err)
-				}
-				address = strings.TrimSpace(address)
-			}
-
-			if address == "" {
-				return fmt.Errorf("address is required")
-			}
-
-			// Validate address
-			testConn := &config.Connection{Address: address}
-			if validateErr := testConn.ValidateAddress(); validateErr != nil {
-				return fmt.Errorf("invalid address: %w", validateErr)
-			}
-
-			// Get server type
-			if serverType == "" && !nonInteractive {
-				fmt.Print("Server type [vault/openbao] (default: vault): ")
-				serverType, err = reader.ReadString('\n')
-				if err != nil {
-					return fmt.Errorf("failed to read server type: %w", err)
-				}
-				serverType = strings.TrimSpace(strings.ToLower(serverType))
-				if serverType == "" {
-					serverType = "vault"
-				}
-			}
-			if serverType == "" {
-				serverType = "vault"
-			}
-
-			var binaryType config.BinaryType
-			switch serverType {
-			case "vault":
-				binaryType = config.BinaryTypeVault
-			case "openbao", "bao":
-				binaryType = config.BinaryTypeOpenBao
-			default:
-				return fmt.Errorf("invalid server type %q: must be 'vault' or 'openbao'", serverType)
-			}
-
-			// Get profile name
-			if name == "" && !nonInteractive {
-				defaultName := suggestProfileName(address)
-				fmt.Printf("Profile name (default: %s): ", defaultName)
-				name, err = reader.ReadString('\n')
-				if err != nil {
-					return fmt.Errorf("failed to read profile name: %w", err)
-				}
-				name = strings.TrimSpace(name)
-				if name == "" {
-					name = defaultName
-				}
-			}
-
-			if name == "" {
-				name = suggestProfileName(address)
-			}
-
-			// Check for duplicate name
-			for _, conn := range cli.Config.Connections {
-				if conn.Name == name {
-					return fmt.Errorf("profile %q already exists", name)
-				}
-			}
-
-			// Create the connection
-			conn := config.Connection{
-				Name:    name,
-				Address: address,
-				Type:    binaryType,
-			}
-
-			if err := cli.Config.AddConnection(conn); err != nil {
-				return fmt.Errorf("failed to add profile: %w", err)
-			}
-
-			if err := cli.Config.Save(); err != nil {
-				return fmt.Errorf("failed to save configuration: %w", err)
-			}
-
-			fmt.Printf("\nProfile %q created successfully!\n", name)
-			fmt.Printf("  Address: %s\n", address)
-			fmt.Printf("  Type:    %s\n", serverType)
-			fmt.Printf("\nConfiguration saved to: %s\n", cli.Config.FilePath())
-			fmt.Printf("\nNext steps:\n")
-			fmt.Printf("  1. Run 'patrol login' to authenticate\n")
-			fmt.Printf("  2. Run 'patrol daemon start' to enable auto-renewal\n")
-
-			return nil
-		},
-	}
-
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Run without prompts")
-	cmd.Flags().StringVar(&address, "address", "", "Vault/OpenBao server address")
-	cmd.Flags().StringVar(&name, "name", "", "Profile name")
-	cmd.Flags().StringVar(&serverType, "type", "", "Server type (vault or openbao)")
 
 	return cmd
 }
