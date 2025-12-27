@@ -175,7 +175,7 @@ func TestExecuteWithEcho(t *testing.T) {
 	exec := NewExecutor(conn, WithStdout(stdout), WithStderr(stderr), WithCommandRunner(mockRunner))
 
 	ctx := context.Background()
-	exitCode, err := exec.Execute(ctx, []string{"hello", "world"})
+	exitCode, err := exec.Execute(ctx, []string{"hello", "world"}, nil)
 
 	if err != nil {
 		t.Fatalf("Execute() failed: %v", err)
@@ -205,24 +205,98 @@ func TestExecuteCaptureWithEcho(t *testing.T) {
 	exec := NewExecutor(conn, WithCommandRunner(mockRunner))
 
 	ctx := context.Background()
-	stdout, stderr, exitCode, err := exec.ExecuteCapture(ctx, []string{"captured", "output"})
+	var captureBuf bytes.Buffer
+	exitCode, err := exec.Execute(ctx, []string{"captured", "output"}, &captureBuf)
 
 	if err != nil {
-		t.Fatalf("ExecuteCapture() failed: %v", err)
+		t.Fatalf("Execute() failed: %v", err)
 	}
 
 	if exitCode != 0 {
-		t.Errorf("ExecuteCapture() exit code = %d, want 0", exitCode)
+		t.Errorf("Execute() exit code = %d, want 0", exitCode)
 	}
 
-	stdoutStr := strings.TrimSpace(string(stdout))
-	if stdoutStr != "captured output" {
-		t.Errorf("ExecuteCapture() stdout = %q, want %q", stdoutStr, "captured output")
+	output := strings.TrimSpace(captureBuf.String())
+	if output != "captured output" {
+		t.Errorf("Execute() captured = %q, want %q", output, "captured output")
+	}
+}
+
+func TestExecuteStreamsInRealTime(t *testing.T) {
+	conn := &config.Connection{
+		Address:    "https://vault.example.com:8200",
+		BinaryPath: "vault",
 	}
 
-	if len(stderr) != 0 {
-		t.Errorf("ExecuteCapture() stderr = %q, want empty", string(stderr))
+	mockRunner := newMockCommandRunner()
+	mockRunner.setLookPathFunc(func(file string) (string, error) {
+		return file, nil
+	})
+
+	// Use channels to verify streaming happens in real-time
+	stdoutLines := make(chan string, 10)
+	stderrLines := make(chan string, 10)
+
+	stdout := &streamingWriter{lines: stdoutLines}
+	stderr := &streamingWriter{lines: stderrLines}
+
+	exec := NewExecutor(conn, WithStdout(stdout), WithStderr(stderr), WithCommandRunner(mockRunner))
+
+	ctx := context.Background()
+	var captureBuf bytes.Buffer
+	exitCode, err := exec.Execute(ctx, []string{"line1", "line2"}, &captureBuf)
+
+	if err != nil {
+		t.Fatalf("Execute() failed: %v", err)
 	}
+
+	if exitCode != 0 {
+		t.Errorf("Execute() exit code = %d, want 0", exitCode)
+	}
+
+	// Verify both stdout and stderr were streamed
+	close(stdoutLines)
+	close(stderrLines)
+
+	stdoutCount := 0
+	for range stdoutLines {
+		stdoutCount++
+	}
+
+	stderrCount := 0
+	for range stderrLines {
+		stderrCount++
+	}
+
+	if stdoutCount == 0 && stderrCount == 0 {
+		t.Error("Execute() should have streamed output to stdout or stderr")
+	}
+
+	// Verify capture buffer contains the output
+	captured := strings.TrimSpace(captureBuf.String())
+	if captured == "" {
+		t.Error("Execute() should have captured output")
+	}
+}
+
+// streamingWriter writes to a channel for each line to simulate real-time streaming
+type streamingWriter struct {
+	lines chan<- string
+	buf   []byte
+}
+
+func (w *streamingWriter) Write(p []byte) (n int, err error) {
+	w.buf = append(w.buf, p...)
+	for {
+		idx := bytes.IndexByte(w.buf, '\n')
+		if idx == -1 {
+			break
+		}
+		line := string(w.buf[:idx])
+		w.lines <- line
+		w.buf = w.buf[idx+1:]
+	}
+	return len(p), nil
 }
 
 func TestExecuteNonExistentBinary(t *testing.T) {
@@ -237,7 +311,7 @@ func TestExecuteNonExistentBinary(t *testing.T) {
 	exec := NewExecutor(conn, WithCommandRunner(mockRunner))
 
 	ctx := context.Background()
-	_, err := exec.Execute(ctx, []string{"arg"})
+	_, err := exec.Execute(ctx, []string{"arg"}, nil)
 
 	if err == nil {
 		t.Error("Execute() should fail for non-existent binary")
@@ -261,7 +335,7 @@ func TestExecuteWithEnvInjection(t *testing.T) {
 	exec := NewExecutor(conn, WithToken("hvs.testtoken"), WithStdout(stdout), WithStderr(stderr), WithCommandRunner(mockRunner))
 
 	ctx := context.Background()
-	exitCode, err := exec.Execute(ctx, []string{})
+	exitCode, err := exec.Execute(ctx, []string{}, nil)
 
 	if err != nil {
 		t.Fatalf("Execute() failed: %v", err)

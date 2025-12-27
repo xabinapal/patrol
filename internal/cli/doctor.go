@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -470,9 +471,10 @@ func (cli *CLI) checkTokenStatus(ctx context.Context) []CheckResult {
 		return results
 	}
 
-	// Try to look up token
+	// Try to look up token (silent - we only need to parse JSON)
 	executor := proxy.NewExecutor(conn, proxy.WithToken(token))
-	stdout, _, exitCode, err := executor.ExecuteCapture(ctx, []string{"token", "lookup", "-format=json"})
+	var captureBuf bytes.Buffer
+	exitCode, err := executor.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
 	if err != nil || exitCode != 0 {
 		results = append(results, CheckResult{
 			Name:    "Token",
@@ -484,7 +486,7 @@ func (cli *CLI) checkTokenStatus(ctx context.Context) []CheckResult {
 	}
 
 	// Parse token info
-	tokenInfo, err := parseTokenLookupDoctor(stdout)
+	tokenInfo, err := parseTokenLookupDoctor(captureBuf.Bytes())
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:    "Token",

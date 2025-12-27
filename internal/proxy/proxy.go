@@ -2,12 +2,14 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/xabinapal/patrol/internal/config"
@@ -70,12 +72,14 @@ func WithCommandRunner(runner CommandRunner) Option {
 }
 
 // NewExecutor creates a new Executor for the given connection.
+// By default, output is discarded (silent). Use WithStdout/WithStderr
+// to stream output when needed (e.g., for proxy mode or interactive commands).
 func NewExecutor(conn *config.Connection, opts ...Option) *Executor {
 	e := &Executor{
 		conn:          conn,
 		stdin:         os.Stdin,
-		stdout:        os.Stdout,
-		stderr:        os.Stderr,
+		stdout:        io.Discard,
+		stderr:        io.Discard,
 		commandRunner: NewCommandRunner(),
 	}
 
@@ -86,8 +90,37 @@ func NewExecutor(conn *config.Connection, opts ...Option) *Executor {
 	return e
 }
 
+// orderedWriter writes to both a primary writer and a capture buffer.
+// It uses a mutex to ensure ordered writes to the capture buffer when
+// multiple goroutines are writing (stdout and stderr).
+type orderedWriter struct {
+	writer  io.Writer
+	capture *bytes.Buffer
+	mu      *sync.Mutex
+}
+
+func (w *orderedWriter) Write(p []byte) (n int, err error) {
+	// Always write to the primary writer first (non-blocking)
+	n, err = w.writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+
+	// Then write to capture buffer with mutex to maintain order
+	if w.capture != nil {
+		w.mu.Lock()
+		_, _ = w.capture.Write(p) // Ignore errors, best effort
+		w.mu.Unlock()
+	}
+
+	return n, err
+}
+
 // Execute runs a Vault/OpenBao command with the given arguments.
-func (e *Executor) Execute(ctx context.Context, args []string) (int, error) {
+// Output is always streamed to the configured stdout/stderr in real-time.
+// If capture is provided, all output (stdout and stderr) is also captured
+// to that buffer in order for parsing (e.g., JSON responses).
+func (e *Executor) Execute(ctx context.Context, args []string, capture *bytes.Buffer) (int, error) {
 	// Security: Validate the connection before executing
 	if err := e.conn.Validate(); err != nil {
 		return 1, fmt.Errorf("connection validation failed: %w", err)
@@ -113,19 +146,64 @@ func (e *Executor) Execute(ctx context.Context, args []string) (int, error) {
 	// Set up environment
 	cmd.SetEnv(e.buildEnvironment())
 
-	// Connect I/O
-	cmd.SetStdin(e.stdin)
-	cmd.SetStdout(e.stdout)
-	cmd.SetStderr(e.stderr)
+	// Connect stdin if provided
+	if e.stdin != nil {
+		cmd.SetStdin(e.stdin)
+	}
 
 	// Set up signal forwarding
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 
+	if capture == nil {
+		// Simple case: no capture needed, stream directly
+		cmd.SetStdout(e.stdout)
+		cmd.SetStderr(e.stderr)
+
+		// Start the command
+		if startErr := cmd.Start(); startErr != nil {
+			return 1, fmt.Errorf("failed to start %s: %w", binary, startErr)
+		}
+
+		// Forward signals to the child process
+		go func() {
+			for sig := range sigChan {
+				proc := cmd.Process()
+				if proc != nil {
+					// Ignore signal errors - process may have already exited
+					_ = proc.Signal(sig) //nolint:errcheck // Signal errors are non-fatal
+				}
+			}
+		}()
+
+		// Wait for completion
+		waitErr := cmd.Wait()
+
+		// Get exit code
+		if waitErr != nil {
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+				return exitErr.ExitCode(), nil
+			}
+			return 1, fmt.Errorf("failed to execute %s: %w", binary, waitErr)
+		}
+
+		return 0, nil
+	}
+
+	// Capture case: use pipes to stream and optionally capture
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return 1, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return 1, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
 	// Start the command
-	if err := cmd.Start(); err != nil {
-		return 1, fmt.Errorf("failed to start %s: %w", binary, err)
+	if startErr := cmd.Start(); startErr != nil {
+		return 1, fmt.Errorf("failed to start %s: %w", binary, startErr)
 	}
 
 	// Forward signals to the child process
@@ -139,89 +217,54 @@ func (e *Executor) Execute(ctx context.Context, args []string) (int, error) {
 		}
 	}()
 
-	// Wait for completion
-	waitErr := cmd.Wait()
-
-	// Get exit code
-	exitCode := 0
-	if waitErr != nil {
-		if exitErr, ok := waitErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return 1, fmt.Errorf("failed to execute %s: %w", binary, waitErr)
+	// Build writers: always stream to configured stdout/stderr, optionally capture
+	// Use a mutex to ensure ordered writes to the capture buffer
+	var captureMu sync.Mutex
+	captureWriter := func(w io.Writer) io.Writer {
+		if capture == nil {
+			return w
+		}
+		return &orderedWriter{
+			writer:  w,
+			capture: capture,
+			mu:      &captureMu,
 		}
 	}
+	stdoutWriter := captureWriter(e.stdout)
+	stderrWriter := captureWriter(e.stderr)
 
-	return exitCode, nil
-}
+	// Read stdout in a goroutine (stream and optionally capture)
+	stdoutDone := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(stdoutWriter, stdoutPipe)
+		stdoutDone <- copyErr
+	}()
 
-// ExecuteCapture runs a command and captures its output.
-func (e *Executor) ExecuteCapture(ctx context.Context, args []string) (stdout, stderr []byte, exitCode int, err error) {
-	// Security: Validate the connection before executing
-	validateErr := e.conn.Validate()
-	if validateErr != nil {
-		return nil, nil, 1, fmt.Errorf("connection validation failed: %w", validateErr)
+	// Read stderr and stream it in real-time (and optionally capture)
+	_, copyErr := io.Copy(stderrWriter, stderrPipe)
+	if copyErr != nil && copyErr != io.EOF {
+		// Wait for stdout to finish before returning
+		<-stdoutDone
+		return 1, fmt.Errorf("failed to read stderr: %w", copyErr)
 	}
 
-	binary := e.conn.GetBinaryPath()
-
-	// Check if the binary exists
-	binaryPath, lookErr := e.commandRunner.LookPath(binary)
-	if lookErr != nil {
-		return nil, nil, 1, fmt.Errorf("vault/openbao binary %q not found: %w", binary, lookErr)
-	}
-
-	// Build the command
-	// #nosec G204 - binaryPath is validated via LookPath, args are user-controlled but passed to vault/openbao CLI
-	cmd := e.commandRunner.CommandContext(ctx, binaryPath, args...)
-
-	// Set up environment
-	cmd.SetEnv(e.buildEnvironment())
-
-	// Capture stdout and stderr
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, 1, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, nil, 1, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Connect stdin if provided
-	if e.stdin != nil {
-		cmd.SetStdin(e.stdin)
-	}
-
-	// Start the command
-	if startErr := cmd.Start(); startErr != nil {
-		return nil, nil, 1, fmt.Errorf("failed to start %s: %w", binary, startErr)
-	}
-
-	// Read outputs
-	stdout, err = io.ReadAll(stdoutPipe)
-	if err != nil {
-		return nil, nil, 1, fmt.Errorf("failed to read stdout: %w", err)
-	}
-	stderr, err = io.ReadAll(stderrPipe)
-	if err != nil {
-		return nil, nil, 1, fmt.Errorf("failed to read stderr: %w", err)
+	// Wait for stdout to finish
+	if readErr := <-stdoutDone; readErr != nil {
+		return 1, fmt.Errorf("failed to read stdout: %w", readErr)
 	}
 
 	// Wait for completion
 	waitErr := cmd.Wait()
 
 	// Get exit code
-	exitCode = 0
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return stdout, stderr, 1, fmt.Errorf("failed to execute %s: %w", binary, waitErr)
+			return exitErr.ExitCode(), nil
 		}
+		return 1, fmt.Errorf("failed to execute %s: %w", binary, waitErr)
 	}
 
-	return stdout, stderr, exitCode, nil
+	return 0, nil
 }
 
 // buildEnvironment constructs the environment for the Vault CLI.

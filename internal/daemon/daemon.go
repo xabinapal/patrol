@@ -2,6 +2,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -273,18 +274,20 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 
 // lookupToken queries Vault for token information.
 func (d *Daemon) lookupToken(ctx context.Context, conn *config.Connection, tokenStr string) (*token.VaultTokenLookupData, error) {
+	// Silent - we only need to parse JSON, not show output
 	exec := proxy.NewExecutor(conn, proxy.WithToken(tokenStr))
 
-	stdout, stderr, exitCode, err := exec.ExecuteCapture(ctx, []string{"token", "lookup", "-format=json"})
+	var captureBuf bytes.Buffer
+	exitCode, err := exec.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
 	if err != nil {
 		return nil, err
 	}
 
 	if exitCode != 0 {
-		return nil, fmt.Errorf("token lookup failed: %s", string(stderr))
+		return nil, fmt.Errorf("token lookup failed: %s", captureBuf.String())
 	}
 
-	return token.ParseLookupResponse(stdout)
+	return token.ParseLookupResponse(captureBuf.Bytes())
 }
 
 // needsRenewal checks if a token needs to be renewed based on configuration.
@@ -313,19 +316,21 @@ func (d *Daemon) needsRenewal(data *token.VaultTokenLookupData) bool {
 
 // renewToken attempts to renew a token.
 func (d *Daemon) renewToken(ctx context.Context, conn *config.Connection, tokenStr string) error {
+	// Silent - we only need to parse JSON, not show output
 	exec := proxy.NewExecutor(conn, proxy.WithToken(tokenStr))
 
-	stdout, stderr, exitCode, err := exec.ExecuteCapture(ctx, []string{"token", "renew", "-format=json"})
+	var captureBuf bytes.Buffer
+	exitCode, err := exec.Execute(ctx, []string{"token", "renew", "-format=json"}, &captureBuf)
 	if err != nil {
 		return err
 	}
 
 	if exitCode != 0 {
-		return fmt.Errorf("token renewal failed: %s", string(stderr))
+		return fmt.Errorf("token renewal failed: %s", captureBuf.String())
 	}
 
 	// Parse the response to get the new token (in case it changed)
-	tok, err := token.ParseLoginResponse(stdout)
+	tok, err := token.ParseLoginResponse(captureBuf.Bytes())
 	if err != nil {
 		// Token might not have changed, that's OK
 		d.logger.Debug(fmt.Sprintf("Could not parse renewal response for %s: %v", conn.Name, err))

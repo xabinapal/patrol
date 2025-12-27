@@ -117,7 +117,7 @@ func (cli *CLI) proxyCommand(ctx context.Context, args []string) error {
 	)
 
 	// Execute the command
-	exitCode, err := exec.Execute(ctx, args)
+	exitCode, err := exec.Execute(ctx, args, nil)
 	if err != nil {
 		return err
 	}

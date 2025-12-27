@@ -92,6 +92,46 @@ func TestParseLoginResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseLoginResponse_WithWarnings(t *testing.T) {
+	// Simulate Vault output with warning message before JSON
+	mixedOutput := []byte(`The token was not stored in token helper. Set the VAULT_TOKEN environment
+variable or pass the token below with each request to Vault.
+
+{
+  "request_id": "",
+  "lease_id": "",
+  "lease_duration": 0,
+  "renewable": false,
+  "data": null,
+  "warnings": null,
+  "auth": {
+    "client_token": "hvs.test-token-12345",
+    "accessor": "test-accessor",
+    "policies": ["default", "admin"],
+    "token_policies": ["default", "admin"],
+    "lease_duration": 3600,
+    "renewable": true,
+    "entity_id": "entity-123",
+    "token_type": "service",
+    "orphan": false,
+    "num_uses": 0
+  }
+}`)
+
+	tok, err := ParseLoginResponse(mixedOutput)
+	if err != nil {
+		t.Fatalf("ParseLoginResponse() failed with mixed output: %v", err)
+	}
+
+	if tok.ClientToken != "hvs.test-token-12345" {
+		t.Errorf("expected ClientToken 'hvs.test-token-12345', got '%s'", tok.ClientToken)
+	}
+
+	if tok.Accessor != "test-accessor" {
+		t.Errorf("expected Accessor 'test-accessor', got '%s'", tok.Accessor)
+	}
+}
+
 func TestParseLookupResponse(t *testing.T) {
 	jsonData := []byte(`{
 		"request_id": "test",

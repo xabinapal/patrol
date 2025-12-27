@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -191,16 +192,17 @@ func (cli *CLI) runStatus(ctx context.Context, format OutputFormat) error {
 		})
 	}
 
-	// Look up token details
+	// Look up token details (silent - we only need to parse JSON)
 	exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-	stdout, stderr, exitCode, err := exec.ExecuteCapture(ctx, []string{"token", "lookup", "-format=json"})
+	var captureBuf bytes.Buffer
+	exitCode, err := exec.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
 	if err != nil {
 		return fmt.Errorf("failed to lookup token: %w", err)
 	}
 
 	if exitCode != 0 {
 		status.Token.Valid = false
-		status.Token.Error = string(stderr)
+		status.Token.Error = captureBuf.String()
 
 		return output.Write(status, func() {
 			fmt.Printf("Profile:     %s\n", conn.Name)
@@ -214,14 +216,14 @@ func (cli *CLI) runStatus(ctx context.Context, format OutputFormat) error {
 			fmt.Printf("Token:       stored (****%s)\n", storedToken[len(storedToken)-4:])
 			fmt.Println()
 			fmt.Printf("Token Status: invalid or expired\n")
-			fmt.Printf("Error:        %s\n", string(stderr))
+			fmt.Printf("Error:        %s\n", captureBuf.String())
 			fmt.Println()
 			fmt.Println("Your stored token may have expired. Run 'patrol login' to re-authenticate.")
 		})
 	}
 
 	// Parse lookup response
-	lookupData, err := token.ParseLookupResponse(stdout)
+	lookupData, err := token.ParseLookupResponse(captureBuf.Bytes())
 	if err != nil {
 		if cli.verboseFlag {
 			fmt.Fprintf(os.Stderr, "Warning: could not parse token lookup response: %v\n", err)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -105,12 +106,13 @@ By default, the full token is masked. Use --show-token to display it.`,
 				output.Token = storedToken
 			}
 
-			// Try to get more info from Vault
+			// Try to get more info from Vault (silent - we only need to parse JSON)
 			if proxy.BinaryExists(conn) {
 				exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-				stdout, _, exitCode, err := exec.ExecuteCapture(ctx, []string{"token", "lookup", "-format=json"})
+				var captureBuf bytes.Buffer
+				exitCode, err := exec.Execute(ctx, []string{"token", "lookup", "-format=json"}, &captureBuf)
 				if err == nil && exitCode == 0 {
-					lookupData, err := token.ParseLookupResponse(stdout)
+					lookupData, err := token.ParseLookupResponse(captureBuf.Bytes())
 					if err == nil {
 						output.Accessor = lookupData.Accessor
 						output.TTL = lookupData.TTL
@@ -210,18 +212,20 @@ without waiting for the daemon to do it automatically.`,
 				renewArgs = append(renewArgs, "-increment="+increment)
 			}
 
+			// Silent - we only need to parse JSON, not show output
 			exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-			stdout, stderr, exitCode, err := exec.ExecuteCapture(ctx, renewArgs)
+			var captureBuf bytes.Buffer
+			exitCode, err := exec.Execute(ctx, renewArgs, &captureBuf)
 			if err != nil {
 				return fmt.Errorf("failed to renew token: %w", err)
 			}
 
 			if exitCode != 0 {
-				return fmt.Errorf("token renewal failed: %s", string(stderr))
+				return fmt.Errorf("token renewal failed: %s", captureBuf.String())
 			}
 
 			// Parse response
-			tok, err := token.ParseLoginResponse(stdout)
+			tok, err := token.ParseLoginResponse(captureBuf.Bytes())
 			if err != nil {
 				fmt.Println("Token renewed successfully (could not parse response)")
 				return nil
@@ -288,10 +292,12 @@ Use --skip-revoke to only remove from keyring without revoking.`,
 			// Revoke token with Vault (unless skipped)
 			if !skipRevoke {
 				if proxy.BinaryExists(conn) {
+					// Silent - we only need to check if revoke succeeded
 					exec := proxy.NewExecutor(conn, proxy.WithToken(storedToken))
-					_, stderr, exitCode, err := exec.ExecuteCapture(ctx, []string{"token", "revoke", "-self"})
+					var captureBuf bytes.Buffer
+					exitCode, err := exec.Execute(ctx, []string{"token", "revoke", "-self"}, &captureBuf)
 					if err != nil || exitCode != 0 {
-						fmt.Printf("Warning: failed to revoke token with Vault: %s\n", string(stderr))
+						fmt.Printf("Warning: failed to revoke token with Vault: %s\n", captureBuf.String())
 						fmt.Println("The token will be removed from the keyring anyway.")
 					} else {
 						fmt.Println("Token revoked with Vault")

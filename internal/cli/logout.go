@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -175,17 +176,18 @@ func (cli *CLI) revokeToken(ctx context.Context, conn *config.Connection, token 
 		return fmt.Errorf("vault/openbao binary not found")
 	}
 
-	// Create executor with the token to revoke
+	// Create executor with the token to revoke (silent - we only need to check if revoke succeeded)
 	exec := proxy.NewExecutor(conn, proxy.WithToken(token))
 
 	// Execute token revoke -self
-	_, stderr, exitCode, err := exec.ExecuteCapture(ctx, []string{"token", "revoke", "-self"})
+	var captureBuf bytes.Buffer
+	exitCode, err := exec.Execute(ctx, []string{"token", "revoke", "-self"}, &captureBuf)
 	if err != nil {
 		return err
 	}
 
 	if exitCode != 0 {
-		return fmt.Errorf("revoke failed: %s", string(stderr))
+		return fmt.Errorf("revoke failed: %s", captureBuf.String())
 	}
 
 	return nil
