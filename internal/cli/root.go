@@ -1,0 +1,217 @@
+// Package cli provides the command-line interface for Patrol.
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/xabinapal/patrol/internal/config"
+	"github.com/xabinapal/patrol/internal/keyring"
+)
+
+// CLI holds the application state for the CLI.
+type CLI struct {
+	Config  *config.Config
+	Keyring keyring.Store
+	rootCmd *cobra.Command
+
+	// Flags
+	profileFlag string
+	verboseFlag bool
+	outputFlag  string
+}
+
+// New creates a new CLI instance.
+func New() *CLI {
+	cli := &CLI{
+		Keyring: keyring.DefaultStore(),
+	}
+
+	cli.rootCmd = &cobra.Command{
+		Use:   "patrol [command]",
+		Short: "Patrol - Vault/OpenBao token manager",
+		Long: `Patrol is a CLI utility that manages HashiCorp Vault and OpenBao
+authentication tokens, providing secure persistent storage and automatic renewal.
+
+Patrol can be used in two ways:
+  1. As a CLI proxy: Use 'patrol' in place of 'vault' or 'bao' commands
+  2. As a token helper: Configure Vault to use Patrol for token storage
+
+Any command not recognized as a Patrol command will be passed through to the
+underlying Vault/OpenBao CLI.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return cli.initialize(cmd)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// If no args, show help
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			// Otherwise, proxy to vault
+			return cli.proxyCommand(cmd.Context(), args)
+		},
+	}
+
+	// Configure to accept unknown commands for proxying
+	cli.rootCmd.FParseErrWhitelist.UnknownFlags = true
+
+	// Global flags
+	cli.rootCmd.PersistentFlags().StringVarP(&cli.profileFlag, "profile", "p", "", "Use a specific profile")
+	cli.rootCmd.PersistentFlags().BoolVarP(&cli.verboseFlag, "verbose", "v", false, "Enable verbose output")
+	cli.rootCmd.PersistentFlags().StringVarP(&cli.outputFlag, "output", "o", "text", "Output format (text, json)")
+
+	// Add commands
+	cli.addCommands()
+
+	return cli
+}
+
+// addCommands adds all subcommands to the root command.
+func (cli *CLI) addCommands() {
+	cli.rootCmd.AddCommand(
+		cli.newVersionCmd(),
+		cli.newLoginCmd(),
+		cli.newLogoutCmd(),
+		cli.newStatusCmd(),
+		cli.newUseCmd(),
+		cli.newProfileCmd(),
+		cli.newConfigCmd(),
+		cli.newDoctorCmd(),
+		cli.newTokenCmd(),
+		cli.newDaemonCmd(),
+		cli.newTokenHelperCmd(),
+		cli.newCompletionCmd(),
+	)
+}
+
+// initialize loads configuration and sets up the CLI.
+func (cli *CLI) initialize(cmd *cobra.Command) error {
+	// Skip initialization for certain commands
+	if IsTokenHelperCommand(cmd.Name()) {
+		return nil
+	}
+
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+	cli.Config = cfg
+
+	// Override current profile if flag is set
+	if cli.profileFlag != "" {
+		if err := cli.Config.SetCurrent(cli.profileFlag); err != nil {
+			return fmt.Errorf("invalid profile: %w", err)
+		}
+	}
+
+	// Check environment variable for profile override
+	if envProfile := os.Getenv("PATROL_PROFILE"); envProfile != "" && cli.profileFlag == "" {
+		// Security: Validate profile name format before using in error messages
+		if !isValidProfileName(envProfile) {
+			if cli.verboseFlag {
+				fmt.Fprintf(os.Stderr, "Warning: PATROL_PROFILE contains invalid profile name format\n")
+			}
+		} else if err := cli.Config.SetCurrent(envProfile); err != nil {
+			// Don't fail, just warn
+			if cli.verboseFlag {
+				fmt.Fprintf(os.Stderr, "Warning: PATROL_PROFILE profile %q not found\n", envProfile)
+			}
+		}
+	}
+
+	return nil
+}
+
+// isValidProfileName checks if a profile name contains only safe characters.
+// This prevents log injection and other security issues from malicious env vars.
+func isValidProfileName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, r := range name {
+		// Allow alphanumeric, hyphen, underscore, and dot
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// Execute runs the CLI.
+// It detects the command type and routes to the appropriate handler.
+func (cli *CLI) Execute(ctx context.Context) error {
+	// Route based on command type
+	args := os.Args[1:]
+
+	// 1. Check if this is a token helper invocation
+	if cli.ShouldHandleAsTokenHelper(args) {
+		return cli.handleTokenHelper(ctx, args[0])
+	}
+
+	// 2. Check if this should be proxied to vault/bao
+	if shouldProxy, proxyArgs := cli.ShouldProxy(); shouldProxy {
+		if err := cli.InitializeForProxy(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return cli.proxyCommand(ctx, proxyArgs)
+	}
+
+	// 3. Handle as a regular Patrol command
+	return cli.rootCmd.ExecuteContext(ctx)
+}
+
+// GetCurrentConnection returns the current connection, considering flags and env vars.
+func (cli *CLI) GetCurrentConnection() (*config.Connection, error) {
+	if cli.Config.Current == "" {
+		return nil, errors.New("no active profile configured - use 'patrol profile add' to add a profile, then 'patrol use <profile>' to activate it")
+	}
+
+	return cli.Config.GetCurrentConnection()
+}
+
+// GetToken retrieves the token for the current connection.
+func (cli *CLI) GetToken() (string, error) {
+	conn, err := cli.GetCurrentConnection()
+	if err != nil {
+		return "", err
+	}
+
+	token, err := cli.Keyring.Get(conn.KeyringKey())
+	if err != nil {
+		if errors.Is(err, keyring.ErrTokenNotFound) {
+			return "", nil // No token, not an error
+		}
+		return "", err
+	}
+
+	return token, nil
+}
+
+// SetToken stores a token for the current connection.
+func (cli *CLI) SetToken(token string) error {
+	conn, err := cli.GetCurrentConnection()
+	if err != nil {
+		return err
+	}
+
+	return cli.Keyring.Set(conn.KeyringKey(), token)
+}
+
+// DeleteToken removes the token for the current connection.
+func (cli *CLI) DeleteToken() error {
+	conn, err := cli.GetCurrentConnection()
+	if err != nil {
+		return err
+	}
+
+	return cli.Keyring.Delete(conn.KeyringKey())
+}
