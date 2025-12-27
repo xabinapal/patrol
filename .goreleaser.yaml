@@ -1,0 +1,109 @@
+version: 2
+
+project_name: patrol
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: patrol
+    main: ./cmd/patrol
+    binary: patrol
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/xabinapal/patrol/internal/version.Version={{.Version}}
+      - -X github.com/xabinapal/patrol/internal/version.Commit={{.Commit}}
+      - -X github.com/xabinapal/patrol/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Security
+      regexp: '^.*?sec(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: xabinapal
+    name: patrol
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Patrol {{ .Tag }}
+
+    Patrol is a CLI utility for managing HashiCorp Vault and OpenBao authentication tokens.
+  footer: |
+    **Full Changelog**: https://github.com/xabinapal/patrol/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+brews:
+  - name: patrol
+    repository:
+      owner: xabinapal
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    folder: Formula
+    homepage: "https://github.com/xabinapal/patrol"
+    description: "CLI utility for managing Vault/OpenBao authentication tokens"
+    license: "MIT"
+    skip_upload: auto
+    test: |
+      system "#{bin}/patrol", "version"
+    install: |
+      bin.install "patrol"
