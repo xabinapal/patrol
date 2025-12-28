@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gen2brain/beeep"
-
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/utils"
 )
@@ -19,36 +17,25 @@ type Notifier interface {
 	NotifyFailure(profile string, err error) error
 }
 
-// New creates a new Notifier based on the configuration.
-func New(cfg config.NotificationConfig) Notifier {
-	if !cfg.Enabled {
-		return &noopNotifier{}
+// Option configures a Notifier.
+type Option func(*notifier)
+
+// WithBackend sets a custom notification backend (for testing).
+func WithBackend(backend Backend) Option {
+	return func(n *notifier) {
+		n.backend = backend
 	}
-	return &desktopNotifier{
-		onRenewal: cfg.OnRenewal,
-		onFailure: cfg.OnFailure,
-	}
 }
 
-// noopNotifier is a no-op implementation that does nothing.
-type noopNotifier struct{}
-
-func (n *noopNotifier) NotifyRenewal(profile string, newTTL time.Duration) error {
-	return nil
-}
-
-func (n *noopNotifier) NotifyFailure(profile string, err error) error {
-	return nil
-}
-
-// desktopNotifier sends desktop notifications using the system notification service.
-type desktopNotifier struct {
+// notifier sends desktop notifications using the system notification service.
+type notifier struct {
 	onRenewal bool
 	onFailure bool
+	backend   Backend
 }
 
 // NotifyRenewal sends a notification about successful token renewal.
-func (n *desktopNotifier) NotifyRenewal(profile string, newTTL time.Duration) error {
+func (n *notifier) NotifyRenewal(profile string, newTTL time.Duration) error {
 	if !n.onRenewal {
 		return nil
 	}
@@ -56,11 +43,11 @@ func (n *desktopNotifier) NotifyRenewal(profile string, newTTL time.Duration) er
 	title := "Patrol: Token Renewed"
 	message := fmt.Sprintf("Token for '%s' renewed successfully.\nNew TTL: %s", profile, utils.FormatDuration(newTTL))
 
-	return beeep.Notify(title, message, "")
+	return n.backend.Notify(title, message, "")
 }
 
 // NotifyFailure sends a notification about renewal failure.
-func (n *desktopNotifier) NotifyFailure(profile string, err error) error {
+func (n *notifier) NotifyFailure(profile string, err error) error {
 	if !n.onFailure {
 		return nil
 	}
@@ -68,5 +55,20 @@ func (n *desktopNotifier) NotifyFailure(profile string, err error) error {
 	title := "Patrol: Renewal Failed"
 	message := fmt.Sprintf("Failed to renew token for '%s'.\nError: %v", profile, err)
 
-	return beeep.Alert(title, message, "")
+	return n.backend.Alert(title, message, "")
+}
+
+// New creates a new Notifier based on the configuration.
+func New(cfg config.NotificationConfig, opts ...Option) Notifier {
+	n := &notifier{
+		onRenewal: cfg.Enabled && cfg.OnRenewal,
+		onFailure: cfg.Enabled && cfg.OnFailure,
+		backend:   newDesktopBackend(),
+	}
+
+	for _, opt := range opts {
+		opt(n)
+	}
+
+	return n
 }
