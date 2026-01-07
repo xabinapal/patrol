@@ -5,29 +5,41 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
-	"github.com/xabinapal/patrol/internal/config"
+	"github.com/xabinapal/patrol/internal/types"
 )
+
+// HealthExecutor provides an interface for executing Vault health checks.
+type HealthExecutor interface {
+	CheckHealth(ctx context.Context, prof *types.Profile) *HealthStatus
+}
+
+type healthExecutor struct{}
+
+// NewHealthExecutor creates a new HealthExecutor.
+func NewHealthExecutor() HealthExecutor {
+	return &healthExecutor{}
+}
 
 // HealthStatus represents the health status of a Vault/OpenBao server.
 type HealthStatus struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Status  string
+	Message string
 }
 
-// CheckHealth checks the health of a Vault/OpenBao server.
-func CheckHealth(ctx context.Context, conn *config.Connection) *HealthStatus {
-	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
+func (e *healthExecutor) CheckHealth(ctx context.Context, prof *types.Profile) *HealthStatus {
 	status := &HealthStatus{}
 
-	// Test HTTP connectivity
-	client := &http.Client{Timeout: 5 * time.Second}
-	healthURL := conn.Address + "/v1/sys/health"
+	client, err := buildHTTPClient(prof)
+	if err != nil {
+		status.Status = "error"
+		status.Message = fmt.Sprintf("failed to create HTTP client: %v", err)
+		return status
+	}
 
-	req, err := http.NewRequestWithContext(testCtx, "GET", healthURL, nil)
+	url := prof.Address + "/v1/sys/health"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		status.Status = "error"
 		status.Message = fmt.Sprintf("invalid URL: %v", err)

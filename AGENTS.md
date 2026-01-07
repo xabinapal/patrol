@@ -16,7 +16,7 @@ You are an AI coding assistant acting as a **senior Go (Golang) developer** on t
 
 ### Code Coverage Requirements
 - **Minimum 80% code coverage** for all packages.
-- Critical security paths (token handling, keyring operations) must have **90%+ coverage**.
+- Critical security paths (token handling, token store operations) must have **90%+ coverage**.
 - Check coverage after adding tests: `make coverage` (generates coverage.html) or `make test` (generates coverage.out)
 - Identify and address coverage gaps proactively.
 
@@ -62,6 +62,57 @@ For implementing a new feature:
 - Specify expected outputs explicitly.
 - Review subagent results critically before integrating.
 
+## Architecture Patterns
+
+### Type Organization
+- **`types` package**: Contains core domain types that are shared across packages:
+  - `types.Profile`: Connection profile representation (independent of config or storage)
+  - `types.Token`: Internal token model (no JSON annotations, used for business logic)
+  - These types should NOT have JSON annotations (they're internal models)
+  - These types should NOT have methods that belong to other packages (e.g., token store operations)
+
+### Manager Pattern
+- **High-level operations use manager structs**:
+  - `TokenManager`: Manages all token operations
+    - Initialized with `context.Context`, `tokenstore.Store`, and optional `vault.TokenExecutor` (defaults to `vault.NewTokenExecutor()`)
+    - Methods accept `*types.Profile` (not `*config.Connection`)
+    - Provides: `Get`, `Set`, `Delete`, `HasToken`, `GetStatus`, `Renew`, `Revoke`, `Lookup`
+  - `ProfileManager`: Manages all profile operations
+    - Initialized with `context.Context` and `*config.Config`
+    - Methods return `*types.Profile` (not `*config.Connection`)
+    - Provides: `GetCurrent`, `Get`, `List`
+
+### Package Responsibilities
+- **`vault` package**: Low-level Vault/OpenBao server interactions
+  - `http.go`: `buildHTTPClient()` function - creates HTTP client with TLS configuration from profile. **Always use this function** when making HTTP requests to Vault/OpenBao servers to ensure proper TLS configuration (certificates, skip verify, etc.) is applied.
+  - `token.go`: `TokenExecutor` interface and implementation with methods: `GetTokenStatus`, `LookupToken`, `RenewToken`, `RevokeToken`; and JSON response parsing (ParseLoginResponse, ParseLookupResponse); Vault API response types (VaultTokenResponse, VaultTokenLookupData, TokenStatus, etc.)
+  - `health.go`: `HealthExecutor` interface and implementation with method: `CheckHealth`; Health status types (HealthStatus)
+  - All executor methods accept `*types.Profile` (convert to `*config.Connection` only when needed for proxy)
+  - **No convenience functions**: All vault operations must use executors directly for proper dependency injection
+  - **Vault API vs Binary**: **Always prefer using the Vault HTTP API directly** over executing binary commands whenever possible. The API is faster, more reliable, easier to test, and doesn't require the Vault binary to be installed. Use binary commands only when the API doesn't support the operation (e.g., complex login flows that require interactive input).
+
+- **`token` package**: High-level token management
+  - `manager.go`: TokenManager implementation
+
+- **`tokenstore` package**: Secure token storage backends
+  - `store.go`: Store interface, errors, constants (ServicePrefix, TestStoreEnvVar), helper functions (keyFromProfile), and DefaultStore() factory function
+  - `keyring.go`: KeyringStore implementation (OS keyring backend) with NewKeyringStore() constructor
+  - `file.go`: FileStore implementation (file-based backend for testing) with NewFileStore() constructor
+  - Both stores use constructor functions for consistent initialization
+  - The package handles key generation from profiles internally
+  - DefaultStore() panics if FileStore creation fails when TestStoreEnvVar is set (no fallback to KeyringStore)
+
+- **`profile` package**: High-level profile management
+  - `manager.go`: ProfileManager implementation
+  - `types.go`: Profile display types (Info, Status) for CLI output
+
+### Type Conversion Patterns
+- **Profile ↔ Connection**: Use `types.FromConnection()` and `prof.ToConnection()`
+  - `FromConnection()`: Creates a `*types.Profile` from `*config.Connection`
+  - `ToConnection()`: Converts `*types.Profile` to `*config.Connection` (only when needed for proxy operations)
+- **Vault Response → Token**: Convert `vault.VaultTokenResponse` to `types.Token` in TokenManager
+- **Never use `*config.Connection` directly** in application code - always use `*types.Profile`
+
 ## Design Principles and Best Practices
 
 ### Core Principles
@@ -81,6 +132,27 @@ For implementing a new feature:
   - Functions that interact with external systems MUST accept options/parameters for dependency injection
   - Use the options pattern (e.g., `...proxy.Option`) for flexible configuration
   - Never create concrete dependencies inside functions that need to be testable
+- **Vault API Preference:** **Always prefer using the Vault HTTP API directly** over executing binary commands whenever possible.
+  - The API is faster (no subprocess overhead), more reliable, easier to test (standard HTTP mocking), and doesn't require the Vault binary to be installed
+  - Use `vault.buildHTTPClient(prof)` function whenever making HTTP requests to Vault/OpenBao servers to ensure proper TLS configuration
+  - Use binary commands only when the API doesn't support the operation (e.g., complex login flows that require interactive input or file-based authentication methods)
+  - All token operations (renew, revoke, lookup) use the API directly - follow this pattern for new operations
+- **Manager Pattern:** High-level operations are managed by dedicated manager structs:
+  - `TokenManager`: Manages token operations (initialized with context, tokenstore.Store, and optional vault.TokenExecutor)
+  - `ProfileManager`: Manages profile operations (initialized with context and config)
+  - Managers provide a clean API and encapsulate business logic
+- **Constructor Pattern:** All store implementations use constructor functions:
+  - `tokenstore.NewKeyringStore()` - creates OS keyring store
+  - `tokenstore.NewFileStore(dir)` - creates file-based store (testing only)
+  - `vault.NewTokenExecutor()` - creates vault token executor
+  - `vault.NewHealthExecutor()` - creates vault health executor
+  - This ensures consistent initialization and enables dependency injection
+- **Type Separation:** Core domain types (`Profile`, `Token`) are in the `types` package:
+  - `types.Profile`: Connection profile representation (not tied to config or storage)
+  - `types.Token`: Token representation (internal application model, not Vault API response)
+    - Contains only fields actually used by the application: `ClientToken`, `LeaseDuration`, `Renewable`, `ExpiresAt`
+    - Metadata fields (policies, accessor, etc.) are available via `vault.TokenStatus` from lookups, not stored in the internal model
+  - Vault API response types are in `vault` package (e.g., `vault.VaultTokenResponse`)
 - **Configuration Management:** All configurable values should come from config files or environment.
 - **Structured Logging:** Use structured logging (not fmt.Printf) for operational visibility.
 - **Graceful Degradation:** Handle failures gracefully; never crash on recoverable errors.
@@ -113,13 +185,14 @@ patrol/
 │   ├── cli/             # CLI commands
 │   ├── config/          # Configuration management
 │   ├── daemon/          # Background service
-│   ├── keyring/         # Secure storage
 │   ├── notify/          # Desktop notifications
-│   ├── profile/         # Profile management
+│   ├── profile/         # Profile management (ProfileManager)
 │   ├── proxy/           # Vault CLI proxy
-│   ├── token/           # Token management
+│   ├── token/           # Token management (TokenManager)
+│   ├── tokenstore/      # Secure token storage backends (Store interface, KeyringStore, FileStore)
+│   ├── types/           # Core domain types (Profile, Token)
 │   ├── utils/           # Utility functions
-│   ├── vault/           # Vault health checks
+│   ├── vault/           # Vault/OpenBao server interactions
 │   └── version/         # Version info
 ├── test/
 │   └── integration/     # Integration tests
@@ -147,9 +220,17 @@ patrol/
 - Name test functions clearly: `TestFunction_Scenario`
 - Tests must be independent of each other.
 - Use the Arrange-Act-Assert pattern.
+- **Test file naming**: Test files must match their source files:
+  - `manager.go` → `manager_test.go`
+  - `token.go` → `token_test.go`
+  - `store.go` → `store_test.go` (if needed)
+  - `keyring.go` → `keyring_test.go`
+  - `file.go` → `file_test.go`
+  - `profile.go` → `profile_test.go`
+- **No wrapper test files**: Don't create test files for packages that only contain aliases or wrappers.
 
 ### Integration Tests
-- **Required for all external interactions** (Vault, keyring, filesystem).
+- **Required for all external interactions** (Vault, token store, filesystem).
 - Use build tags: `//go:build integration`
 - Must be runnable with: `make test-integration`
 - Integration tests must be verified to pass before merging.
@@ -163,55 +244,85 @@ patrol/
 
 **CRITICAL**: All functions that interact with external systems (executables, filesystem, network) **MUST** accept options for dependency injection to enable testing.
 
+#### Executor Pattern (vault package)
+The `vault` package uses executor interfaces for testability:
+
+- **All vault operations are methods on executor interfaces** (`TokenExecutor`, `HealthExecutor`)
+- Executors are created via factory functions: `vault.NewTokenExecutor()`, `vault.NewHealthExecutor()`
+- **NEVER create convenience functions that instantiate executors internally** - this breaks dependency injection
+- Executor methods accept `...proxy.Option` for command runner injection
+- Example pattern:
+  ```go
+  // ✅ CORRECT: Uses executor interface, allows dependency injection
+  type TokenManager struct {
+      ctx     context.Context
+      store   tokenstore.Store
+      vault   vault.TokenExecutor  // Interface, can be mocked
+  }
+
+  func NewTokenManager(ctx context.Context, store tokenstore.Store, executor vault.TokenExecutor) *TokenManager {
+      return &TokenManager{ctx: ctx, store: store, vault: executor}
+  }
+
+  func (tm *TokenManager) Renew(prof *types.Profile, increment string, opts ...proxy.Option) (*types.Token, error) {
+      tokenStr, err := tm.store.Get(prof)
+      if err != nil {
+          return nil, err
+      }
+      vaultResp, err := tm.vault.RenewToken(tm.ctx, prof, tokenStr, increment, opts...)
+      // ...
+  }
+
+  // ❌ WRONG: Convenience function that creates executor internally
+  func RenewToken(ctx context.Context, prof *types.Profile, tokenStr string, increment string, opts ...proxy.Option) (*VaultTokenResponse, error) {
+      executor := NewTokenExecutor()  // Breaks dependency injection!
+      return executor.RenewToken(ctx, prof, tokenStr, increment, opts...)
+  }
+  ```
+
 #### CommandRunner Pattern (proxy package)
 The `proxy` package uses a `CommandRunner` interface pattern for testability:
 
 - **All functions that execute commands MUST accept `...proxy.Option`** to allow injecting a mock `CommandRunner`
-- Functions like `BinaryExists()`, `NewExecutor()`, and all token operations accept options
+- Functions like `BinaryExists()`, `NewExecutor()` accept options
 - **NEVER create a new `CommandRunner` directly** in functions that need to be testable - always accept options
-- Example pattern:
-  ```go
-  // ✅ CORRECT: Accepts options for testing
-  func Renew(ctx context.Context, conn *config.Connection, tokenStr string, opts ...proxy.Option) (*Token, error) {
-      if !proxy.BinaryExists(conn, opts...) {  // Pass options through
-          return nil, fmt.Errorf("binary not found")
-      }
-      exec := proxy.NewExecutor(conn, opts...)  // Use options
-      // ...
-  }
-
-  // ❌ WRONG: Creates real runner, can't be mocked
-  func Renew(ctx context.Context, conn *config.Connection, tokenStr string) (*Token, error) {
-      if !proxy.BinaryExists(conn) {  // Uses real runner internally
-          return nil, fmt.Errorf("binary not found")
-      }
-      // ...
-  }
-  ```
+- Executor methods pass options through to proxy functions
 
 #### General Mocking Guidelines
-- Use interfaces for external dependencies (filesystem, network, executables)
+- Use interfaces for external dependencies (filesystem, network, executables, vault operations)
 - Provide mock implementations for testing
 - Never mock the thing you're testing
 - **When adding new functions that interact with external systems, ensure they accept options/parameters for dependency injection**
 - If a helper function calls another function that accepts options, **pass those options through** - don't create new dependencies internally
+- Manager structs (TokenManager, ProfileManager) accept dependencies in their constructors for testability
+- **Vault operations use executor interfaces** (`vault.TokenExecutor`, `vault.HealthExecutor`) - inject mock executors in tests
+- **Never create convenience functions that instantiate executors** - always require executors to be passed in
 
 #### Common Pitfalls to Avoid
 - ❌ Creating `NewCommandRunner()` inside a function that should be testable
 - ❌ Calling `proxy.BinaryExists()` without passing through options from the caller
 - ❌ Hardcoding file system operations instead of accepting interfaces
 - ❌ Not passing options through call chains (if function A accepts options and calls function B that also accepts options, pass them through)
+- ❌ **Creating convenience functions that instantiate executors internally** (e.g., `func RenewToken(...) { executor := NewTokenExecutor(); return executor.RenewToken(...) }`) - this breaks dependency injection
+- ❌ Adding JSON annotations to `types.Token` or `types.Profile` (these are internal models, not API responses)
+- ❌ Using `*config.Connection` directly in application code (use `*types.Profile` instead, convert with `prof.ToConnection()` only when needed for proxy operations)
+- ❌ Creating wrapper files that only alias types (use original types directly from `types` package)
+- ❌ Adding methods to types that belong to other packages (e.g., key generation logic belongs in `tokenstore` package, not as a method on `Profile`)
+- ❌ Using direct struct initialization (`&KeyringStore{}`) instead of constructor functions (`NewKeyringStore()`)
+- ❌ Implementing fallback behavior in DefaultStore() - should panic on FileStore failure when TestStoreEnvVar is set
 
 ### Coverage Goals
 | Package | Minimum Coverage |
 |---------|-----------------|
-| internal/keyring | 90% |
+| internal/tokenstore | 90% |
 | internal/token | 90% |
+| internal/types | 90% |
 | internal/config | 85% |
-| internal/proxy | 80% |
-| internal/cli | 70% |
-| internal/daemon | 80% |
 | internal/profile | 85% |
+| internal/vault | 85% |
+| internal/proxy | 80% |
+| internal/daemon | 80% |
+| internal/cli | 70% |
 
 ### Testability Requirements
 - **All unit tests MUST run without external dependencies** (no vault binary, no network, no filesystem access beyond temp directories)
@@ -268,15 +379,28 @@ Rules:
 **This software handles authentication credentials.** Security is not optional.
 
 ### Token Handling
-- Tokens must **only** be stored in OS keyrings – never in plaintext files.
+- Tokens must **only** be stored in secure token stores (OS keyring or file-based for testing) – never in plaintext files in production.
 - Tokens must not be logged, printed, or included in error messages.
 - Token variables should be cleared/overwritten when no longer needed.
 - Use constant-time comparison for token validation if applicable.
+- **Type separation**:
+  - `types.Token` is the internal application model (no JSON annotations, contains only fields used by application logic)
+  - `vault.VaultTokenResponse` is for Vault API responses (with JSON annotations)
+  - Never use `types.Token` for JSON marshaling/unmarshaling
+  - Token metadata (policies, accessor, etc.) is available via `vault.TokenStatus` from lookups, not stored in `types.Token`
 
-### Keyring Security
-- **Never fall back to insecure storage** if keyring is unavailable.
+### Token Store Security
+- **Never fall back to insecure storage** if token store is unavailable.
 - Fail loudly if secure storage is not available.
-- Validate keyring availability before attempting to store secrets.
+- Validate token store availability before attempting to store secrets.
+- The `tokenstore` package provides a `Store` interface with implementations:
+  - `KeyringStore`: OS keyring backend (production) - created via `NewKeyringStore()`
+  - `FileStore`: File-based backend (testing only, controlled by `PATROL_TEST_KEYRING_DIR` env var) - created via `NewFileStore(dir)`
+- **Both stores use constructor functions** for consistent initialization patterns
+- **DefaultStore() behavior**:
+  - If `PATROL_TEST_KEYRING_DIR` is set, attempts to create a FileStore
+  - **Panics if FileStore creation fails** (no fallback to KeyringStore) - this ensures test environments fail fast rather than silently using production keyring
+  - Otherwise returns a KeyringStore via `NewKeyringStore()`
 
 ### Input Validation
 - Validate all user inputs.
@@ -346,7 +470,13 @@ Rules:
 - [ ] Tests are comprehensive and use mocks (no external dependencies)
 - [ ] All functions that interact with external systems accept options for dependency injection
 - [ ] Options are passed through call chains (not dropped)
+- [ ] Vault operations use executor interfaces (no convenience functions that create executors)
+- [ ] TokenManager and other managers accept executors in constructors for testability
 - [ ] Tests pass in clean CI environment (verified)
+- [ ] Test file names match source file names
+- [ ] No wrapper/alias files without value (use original types directly)
+- [ ] Core types are in `types` package, not scattered across packages
+- [ ] Vault API response types are in `vault` package, not in `types`
 - [ ] Documentation is updated
 - [ ] No unnecessary complexity
 - [ ] Performance is acceptable

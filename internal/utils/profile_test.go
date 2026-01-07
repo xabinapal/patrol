@@ -202,3 +202,109 @@ func TestIsValidProfileName(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeAddressForProfile(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "https URL",
+			input:    "https://vault.example.com:8200",
+			expected: "vault-example-com-8200",
+		},
+		{
+			name:     "http URL",
+			input:    "http://vault.example.com:8200",
+			expected: "vault-example-com-8200",
+		},
+		{
+			name:     "URL without scheme",
+			input:    "vault.example.com:8200",
+			expected: "vault-example-com-8200",
+		},
+		{
+			name:     "URL with path",
+			input:    "https://vault.example.com:8200/path/to/vault",
+			expected: "vault-example-com-8200-path-to-vault",
+		},
+		{
+			name:     "URL with trailing slash",
+			input:    "https://vault.example.com:8200/",
+			expected: "vault-example-com-8200",
+		},
+		{
+			name:     "localhost",
+			input:    "http://localhost:8200",
+			expected: "localhost-8200",
+		},
+		{
+			name:     "IP address",
+			input:    "https://127.0.0.1:8200",
+			expected: "127-0-0-1-8200",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SanitizeAddressForProfile(tt.input)
+			if result != tt.expected {
+				t.Errorf("SanitizeAddressForProfile(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSanitizeNamespaceForProfile(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple namespace",
+			input:    "team1",
+			expected: "team1",
+		},
+		{
+			name:     "namespace with slash",
+			input:    "team1/project1",
+			expected: "team1-project1",
+		},
+		{
+			name:     "nested namespace",
+			input:    "team1/project1/env",
+			expected: "team1-project1-env",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "leading slash",
+			input:    "/team1",
+			expected: "-team1",
+		},
+		{
+			name:     "trailing slash",
+			input:    "team1/",
+			expected: "team1-",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SanitizeNamespaceForProfile(tt.input)
+			if result != tt.expected {
+				t.Errorf("SanitizeNamespace(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}

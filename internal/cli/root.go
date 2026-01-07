@@ -9,15 +9,16 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xabinapal/patrol/internal/config"
-	"github.com/xabinapal/patrol/internal/keyring"
 	"github.com/xabinapal/patrol/internal/profile"
+	"github.com/xabinapal/patrol/internal/tokenstore"
+	"github.com/xabinapal/patrol/internal/types"
 	"github.com/xabinapal/patrol/internal/utils"
 )
 
 // CLI holds the application state for the CLI.
 type CLI struct {
 	Config  *config.Config
-	Keyring keyring.Store
+	Store   tokenstore.TokenStore
 	rootCmd *cobra.Command
 
 	// Flags
@@ -29,7 +30,7 @@ type CLI struct {
 // New creates a new CLI instance.
 func New() *CLI {
 	cli := &CLI{
-		Keyring: keyring.DefaultStore(),
+		Store: tokenstore.NewTokenStore(),
 	}
 
 	cli.rootCmd = &cobra.Command{
@@ -81,7 +82,6 @@ func (cli *CLI) addCommands() {
 		cli.newLogoutCmd(),
 		cli.newProfileCmd(),
 		cli.newConfigCmd(),
-		cli.newDoctorCmd(),
 		cli.newDaemonCmd(),
 		cli.newTokenHelperCmd(),
 		cli.newCompletionCmd(),
@@ -152,6 +152,13 @@ func (cli *CLI) Execute(ctx context.Context) error {
 }
 
 // GetCurrentProfile returns the current profile, considering flags and env vars.
-func (cli *CLI) GetCurrentProfile() (*profile.Profile, error) {
-	return profile.GetCurrent(cli.Config)
+func (cli *CLI) GetCurrentProfile() (*types.Profile, error) {
+	ctx := context.Background()
+	pm := profile.NewProfileManager(ctx, cli.Config)
+	return pm.GetCurrent()
+}
+
+// GetProfileManager returns a ProfileManager for the CLI.
+func (cli *CLI) GetProfileManager(ctx context.Context) *profile.ProfileManager {
+	return profile.NewProfileManager(ctx, cli.Config)
 }

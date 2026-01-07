@@ -128,7 +128,7 @@ Examples:
 			}
 
 			// Create daemon
-			d := daemon.New(cli.Config, cli.Keyring)
+			d := daemon.New(cli.Config, cli.Store)
 			d.SetLogger(logger)
 
 			// Set up health server if configured

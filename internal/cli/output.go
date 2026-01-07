@@ -38,7 +38,7 @@ func NewOutputWriter(format OutputFormat) *OutputWriter {
 }
 
 // WriteJSON writes data as JSON to stdout.
-func (o *OutputWriter) WriteJSON(data interface{}) error {
+func (o *OutputWriter) WriteJSON(data any) error {
 	encoder := json.NewEncoder(o.writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(data)
@@ -46,7 +46,7 @@ func (o *OutputWriter) WriteJSON(data interface{}) error {
 
 // Write writes data according to the configured format.
 // textFunc is called for text output, data is used for JSON output.
-func (o *OutputWriter) Write(data interface{}, textFunc func()) error {
+func (o *OutputWriter) Write(data any, textFunc func()) error {
 	if o.format == OutputFormatJSON {
 		return o.WriteJSON(data)
 	}

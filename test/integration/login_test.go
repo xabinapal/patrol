@@ -118,7 +118,7 @@ connections:
 	if !strings.Contains(statusOutput, "Token:") {
 		t.Error("profile status should show token information after login")
 	}
-	if !strings.Contains(statusOutput, "Status:") || !strings.Contains(statusOutput, "valid") {
+	if !strings.Contains(statusOutput, "Valid:") || !strings.Contains(statusOutput, "true") {
 		t.Error("profile status should show token status as valid after login")
 	}
 }

@@ -1,5 +1,7 @@
 package utils
 
+import "strings"
+
 // IsValidProfileName checks if a profile name contains only safe characters.
 // This prevents log injection and other security issues from malicious env vars.
 func IsValidProfileName(name string) bool {
@@ -14,4 +16,22 @@ func IsValidProfileName(name string) bool {
 		}
 	}
 	return true
+}
+
+// SanitizeAddressForProfile converts an address to a safe profile name.
+func SanitizeAddressForProfile(addr string) string {
+	name := addr
+	name = strings.TrimPrefix(name, "https://")
+	name = strings.TrimPrefix(name, "http://")
+	name = strings.ReplaceAll(name, ":", "-")
+	name = strings.ReplaceAll(name, "/", "-")
+	name = strings.ReplaceAll(name, ".", "-")
+	// Remove trailing dashes
+	name = strings.TrimRight(name, "-")
+	return name
+}
+
+// SanitizeNamespaceForProfile converts a namespace to a safe profile name.
+func SanitizeNamespaceForProfile(ns string) string {
+	return strings.ReplaceAll(ns, "/", "-")
 }

@@ -14,10 +14,11 @@ import (
 	"time"
 
 	"github.com/xabinapal/patrol/internal/config"
-	"github.com/xabinapal/patrol/internal/keyring"
 	"github.com/xabinapal/patrol/internal/notify"
-	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/token"
+	"github.com/xabinapal/patrol/internal/tokenstore"
+	"github.com/xabinapal/patrol/internal/types"
+	"github.com/xabinapal/patrol/internal/vault"
 )
 
 // connectionBackoff tracks the backoff state for a connection.
@@ -30,7 +31,7 @@ type connectionBackoff struct {
 type Daemon struct {
 	config       *config.Config
 	configPath   string // Path to the config file for reloading
-	keyring      keyring.Store
+	store        tokenstore.TokenStore
 	logger       *Logger
 	healthServer *HealthServer
 	notifier     notify.Notifier
@@ -42,7 +43,7 @@ type Daemon struct {
 }
 
 // New creates a new Daemon instance.
-func New(cfg *config.Config, kr keyring.Store) *Daemon {
+func New(cfg *config.Config, ts tokenstore.TokenStore) *Daemon {
 	// Create default logger
 	logger, err := NewLogger(LoggerConfig{
 		Level:    LogLevelInfo,
@@ -62,7 +63,7 @@ func New(cfg *config.Config, kr keyring.Store) *Daemon {
 	return &Daemon{
 		config:       cfg,
 		configPath:   configPath,
-		keyring:      kr,
+		store:        ts,
 		logger:       logger,
 		notifier:     notifier,
 		backoffState: make(map[string]*connectionBackoff),
@@ -102,7 +103,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	// Check keyring availability
-	if err := d.keyring.IsAvailable(); err != nil {
+	if err := d.store.IsAvailable(); err != nil {
 		return fmt.Errorf("keyring not available: %w", err)
 	}
 
@@ -232,11 +233,14 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 	tokensSkipped := 0
 	profilesWithoutTokens := 0
 
+	// Create TokenManager for token operations
+	tm := token.NewTokenManager(ctx, d.store, vault.NewTokenExecutor())
+
 	for _, conn := range cfg.Connections {
-		prof := &profile.Profile{Connection: &conn}
+		prof := types.FromConnection(&conn)
 
 		// Check if token exists for this profile
-		if !prof.HasToken(d.keyring) {
+		if !tm.HasToken(prof) {
 			d.logger.Debug(fmt.Sprintf("Profile %s: no token stored, skipping", conn.Name))
 			profilesWithoutTokens++
 			continue
@@ -245,7 +249,7 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 		tokensChecked++
 
 		// Look up token to get current TTL
-		lookupData, err := prof.LookupToken(ctx, d.keyring)
+		tok, err := tm.Lookup(prof)
 		if err != nil {
 			d.logger.Error(fmt.Sprintf("Profile %s: error looking up token: %v", conn.Name, err))
 			if d.healthServer != nil {
@@ -257,18 +261,18 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 		// Check if token needs renewal
 		minTTL := cfg.Daemon.MinRenewTTL
 		threshold := cfg.Daemon.RenewThreshold
-		needsRenewal := token.NeedsRenewalFromLookup(lookupData, threshold, minTTL)
+		needsRenewal := tok.NeedsRenewal(threshold, minTTL)
 
 		// Log token status
-		ttlDuration := time.Duration(lookupData.TTL) * time.Second
+		ttlDuration := time.Duration(tok.LeaseDuration) * time.Second
 		if !needsRenewal {
-			d.logger.Info(fmt.Sprintf("Profile %s: token OK (TTL: %s, renewable: %v)", conn.Name, ttlDuration, lookupData.Renewable))
+			d.logger.Info(fmt.Sprintf("Profile %s: token OK (TTL: %s, renewable: %v)", conn.Name, ttlDuration, tok.Renewable))
 			tokensSkipped++
 			continue
 		}
 
 		// Token needs renewal
-		if !lookupData.Renewable {
+		if !tok.Renewable {
 			d.logger.Warn(fmt.Sprintf("Profile %s: token needs renewal but is not renewable (TTL: %s)",
 				conn.Name, ttlDuration))
 			tokensSkipped++
@@ -287,7 +291,7 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 
 		d.logger.Info(fmt.Sprintf("Profile %s: renewing token (current TTL: %s)", conn.Name, ttlDuration))
 
-		_, err = prof.RenewToken(ctx, d.keyring, "")
+		_, err = tm.Renew(prof, "")
 		if err != nil {
 			d.logger.Error(fmt.Sprintf("Profile %s: renewal failed: %v", conn.Name, err))
 			d.recordRenewalFailure(conn.Name)
@@ -305,9 +309,9 @@ func (d *Daemon) checkAndRenewTokens(ctx context.Context) {
 		d.resetBackoff(conn.Name)
 
 		// Get new TTL for notification
-		newTTL := time.Duration(lookupData.CreationTTL) * time.Second // Use creation TTL as estimate
-		if newLookup, err := prof.LookupToken(ctx, d.keyring); err == nil {
-			newTTL = time.Duration(newLookup.TTL) * time.Second
+		newTTL := ttlDuration // Use current TTL as estimate
+		if newTok, err := tm.Lookup(prof); err == nil {
+			newTTL = time.Duration(newTok.LeaseDuration) * time.Second
 		}
 
 		d.logger.Info(fmt.Sprintf("Profile %s: token renewed successfully (new TTL: %s)", conn.Name, newTTL))

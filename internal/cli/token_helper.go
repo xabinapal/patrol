@@ -11,9 +11,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xabinapal/patrol/internal/config"
-	"github.com/xabinapal/patrol/internal/keyring"
-	"github.com/xabinapal/patrol/internal/profile"
+	"github.com/xabinapal/patrol/internal/token"
+	"github.com/xabinapal/patrol/internal/tokenstore"
+	"github.com/xabinapal/patrol/internal/types"
 	"github.com/xabinapal/patrol/internal/utils"
+	"github.com/xabinapal/patrol/internal/vault"
 )
 
 // newTokenHelperCmd creates a hidden command group for token helper operations.
@@ -112,7 +114,7 @@ func (cli *CLI) handleTokenHelperGet() error {
 	}
 
 	// Check keyring availability
-	keyringErr := cli.Keyring.IsAvailable()
+	keyringErr := cli.Store.IsAvailable()
 	if keyringErr != nil {
 		// Cannot access keyring, treat as no token
 		fmt.Fprintf(os.Stderr, "patrol: keyring unavailable: %v\n", keyringErr)
@@ -120,12 +122,14 @@ func (cli *CLI) handleTokenHelperGet() error {
 	}
 
 	// Create profile from connection
-	prof := &profile.Profile{Connection: conn}
+	prof := types.FromConnection(conn)
 
 	// Get the token
-	token, err := prof.GetToken(cli.Keyring)
+	ctx := context.Background()
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+	tokenStr, err := tm.Get(prof)
 	if err != nil {
-		if errors.Is(err, keyring.ErrTokenNotFound) {
+		if errors.Is(err, tokenstore.ErrTokenNotFound) {
 			// No token stored, this is normal
 			return nil
 		}
@@ -135,7 +139,7 @@ func (cli *CLI) handleTokenHelperGet() error {
 	}
 
 	// Output the token (no newline, per spec)
-	fmt.Print(token)
+	fmt.Print(tokenStr)
 	return nil
 }
 
@@ -154,7 +158,7 @@ func (cli *CLI) handleTokenHelperStore() error {
 	}
 
 	// Check keyring availability
-	keyringErr := cli.Keyring.IsAvailable()
+	keyringErr := cli.Store.IsAvailable()
 	if keyringErr != nil {
 		fmt.Fprintf(os.Stderr, "patrol: secure keyring not available: %v\n", keyringErr)
 		os.Exit(1)
@@ -162,27 +166,29 @@ func (cli *CLI) handleTokenHelperStore() error {
 
 	// Read token from stdin
 	reader := bufio.NewReader(os.Stdin)
-	token, err := reader.ReadString('\n')
+	tokenStr, err := reader.ReadString('\n')
 	if err != nil && err.Error() != "EOF" {
 		// Try reading without newline delimiter (some cases may not have newline)
 		// Re-read from beginning isn't possible, so we work with what we got
-		if token == "" {
+		if tokenStr == "" {
 			fmt.Fprintf(os.Stderr, "patrol: failed to read token from stdin: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
 	// Trim any whitespace
-	token = strings.TrimSpace(token)
+	tokenStr = strings.TrimSpace(tokenStr)
 
-	if token == "" {
+	if tokenStr == "" {
 		fmt.Fprintf(os.Stderr, "patrol: empty token received\n")
 		os.Exit(1)
 	}
 
 	// Store the token
-	prof := &profile.Profile{Connection: conn}
-	if err := prof.SetToken(cli.Keyring, token); err != nil {
+	prof := types.FromConnection(conn)
+	ctx := context.Background()
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+	if err := tm.Set(prof, tokenStr); err != nil {
 		fmt.Fprintf(os.Stderr, "patrol: failed to store token: %v\n", err)
 		os.Exit(1)
 	}
@@ -204,9 +210,11 @@ func (cli *CLI) handleTokenHelperErase() error {
 	}
 
 	// Delete the token (ignore "not found" errors)
-	prof := &profile.Profile{Connection: conn}
-	if err := prof.DeleteToken(cli.Keyring); err != nil {
-		if !errors.Is(err, keyring.ErrTokenNotFound) {
+	prof := types.FromConnection(conn)
+	ctx := context.Background()
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+	if err := tm.Delete(prof); err != nil {
+		if !errors.Is(err, tokenstore.ErrTokenNotFound) {
 			fmt.Fprintf(os.Stderr, "patrol: failed to erase token: %v\n", err)
 			os.Exit(1)
 		}
@@ -229,7 +237,7 @@ func (cli *CLI) getTokenHelperConnection() (*config.Connection, error) {
 	// This ensures different servers have different keyring entries
 	profileName := utils.SanitizeAddressForProfile(addr)
 	if namespace != "" {
-		profileName += "-" + utils.SanitizeNamespace(namespace)
+		profileName += "-" + utils.SanitizeNamespaceForProfile(namespace)
 	}
 
 	conn := &config.Connection{

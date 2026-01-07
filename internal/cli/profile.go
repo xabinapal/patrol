@@ -14,15 +14,11 @@ import (
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/token"
+	"github.com/xabinapal/patrol/internal/tokenstore"
+	"github.com/xabinapal/patrol/internal/types"
 	"github.com/xabinapal/patrol/internal/utils"
 	"github.com/xabinapal/patrol/internal/vault"
 )
-
-// ProfileListOutput represents profile list output for JSON.
-type ProfileListOutput struct {
-	Current  string         `json:"current"`
-	Profiles []profile.Info `json:"profiles"`
-}
 
 // newProfileCmd creates the profile command group.
 func (cli *CLI) newProfileCmd() *cobra.Command {
@@ -63,6 +59,21 @@ Examples:
 	return cmd
 }
 
+// ProfileListOutput represents profile list output for JSON.
+type ProfileListOutput struct {
+	Current  string                  `json:"current"`
+	Profiles []ProfileListOutputItem `json:"profiles"`
+}
+
+// ProfileListOutputItem represents a single profile in the list output.
+type ProfileListOutputItem struct {
+	Name      string `json:"name"`
+	Address   string `json:"address"`
+	Type      string `json:"type"`
+	Namespace string `json:"namespace,omitempty"`
+	Current   bool   `json:"current"`
+}
+
 // newProfileListCmd creates the profile list command.
 func (cli *CLI) newProfileListCmd() *cobra.Command {
 	return &cobra.Command{
@@ -84,11 +95,25 @@ func (cli *CLI) runProfileList(format OutputFormat) error {
 	output := NewOutputWriter(format)
 
 	// Get profiles from config
-	profiles := profile.List(cli.Config)
+	ctx := context.Background()
+	pm := profile.NewProfileManager(ctx, cli.Config)
+	profiles := pm.List()
+
+	// Convert to output format
+	profileItems := make([]ProfileListOutputItem, 0, len(profiles))
+	for _, prof := range profiles {
+		profileItems = append(profileItems, ProfileListOutputItem{
+			Name:      prof.Name,
+			Address:   prof.Address,
+			Type:      prof.Type,
+			Namespace: prof.Namespace,
+			Current:   prof.Name == cli.Config.Current,
+		})
+	}
 
 	profileList := ProfileListOutput{
 		Current:  cli.Config.Current,
-		Profiles: profiles,
+		Profiles: profileItems,
 	}
 
 	if len(cli.Config.Connections) == 0 {
@@ -105,17 +130,15 @@ func (cli *CLI) runProfileList(format OutputFormat) error {
 
 		for _, prof := range profiles {
 			current := ""
-			if prof.Current {
+			if prof.Name == cli.Config.Current {
 				current = "* "
 			}
 
 			// Check keyring to see if logged in (CLI layer responsibility)
 			loggedInStr := "no"
-			profProfile, err := profile.Get(cli.Config, prof.Name)
-			if err == nil {
-				if profProfile.HasToken(cli.Keyring) {
-					loggedInStr = "yes"
-				}
+			tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+			if tm.HasToken(prof) {
+				loggedInStr = "yes"
 			}
 
 			connType := prof.Type
@@ -244,12 +267,15 @@ func (cli *CLI) newProfileRemoveCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			prof, err := profile.Get(cli.Config, name)
+			ctx := context.Background()
+			pm := profile.NewProfileManager(ctx, cli.Config)
+			prof, err := pm.Get(name)
 			if err != nil {
 				return err
 			}
 
-			hasToken := prof.HasToken(cli.Keyring)
+			tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+			hasToken := tm.HasToken(prof)
 
 			if hasToken && !forceFlag {
 				return fmt.Errorf("profile %q has a stored token. Use --force to remove anyway, or logout first", name)
@@ -257,7 +283,7 @@ func (cli *CLI) newProfileRemoveCmd() *cobra.Command {
 
 			// Remove token if exists
 			if hasToken {
-				if err := prof.DeleteToken(cli.Keyring); err != nil {
+				if err := tm.Delete(prof); err != nil {
 					return fmt.Errorf("failed to remove token: %w", err)
 				}
 			}
@@ -309,11 +335,10 @@ func (cli *CLI) newProfileEditCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			prof, err := profile.Get(cli.Config, name)
+			conn, err := cli.Config.GetConnection(name)
 			if err != nil {
 				return err
 			}
-			conn := prof.Connection
 
 			// Update fields that were specified
 			if address != "" {
@@ -408,7 +433,9 @@ Examples:
 				return fmt.Errorf("failed to save configuration: %w", err)
 			}
 
-			prof, err := profile.Get(cli.Config, name)
+			ctx := context.Background()
+			pm := profile.NewProfileManager(ctx, cli.Config)
+			prof, err := pm.Get(name)
 			if err != nil {
 				// Profile not found, but continue with address from args
 				fmt.Printf("Switched to profile %q\n", name)
@@ -417,7 +444,8 @@ Examples:
 			fmt.Printf("Switched to profile %q (%s)\n", name, prof.Address)
 
 			// Check if logged in
-			if !prof.HasToken(cli.Keyring) {
+			tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+			if !tm.HasToken(prof) {
 				fmt.Println("Note: You are not logged in to this profile. Run 'patrol login' to authenticate.")
 			}
 
@@ -428,7 +456,9 @@ Examples:
 
 // getProfileNames returns a list of all profile names for completion.
 func (cli *CLI) getProfileNames() []string {
-	profiles := profile.List(cli.Config)
+	ctx := context.Background()
+	pm := profile.NewProfileManager(ctx, cli.Config)
+	profiles := pm.List()
 	if profiles == nil {
 		return nil
 	}
@@ -463,29 +493,30 @@ If no profile name is given, renews the token for the current profile.`,
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 
-			var prof *profile.Profile
+			pm := profile.NewProfileManager(ctx, cli.Config)
+			var prof *types.Profile
+			var err error
 			if len(args) > 0 {
-				var err error
-				prof, err = profile.Get(cli.Config, args[0])
+				prof, err = pm.Get(args[0])
 				if err != nil {
 					return err
 				}
 			} else {
-				var err error
-				prof, err = profile.GetCurrent(cli.Config)
+				prof, err = pm.GetCurrent()
 				if err != nil {
 					return err
 				}
 			}
 
 			// Get current token for comparison
-			storedToken, err := prof.GetToken(cli.Keyring)
+			tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+			storedToken, err := tm.Get(prof)
 			if err != nil {
 				return fmt.Errorf("no token stored for profile %q; run 'patrol login' first", prof.Name)
 			}
 
 			// Renew token
-			tok, err := prof.RenewToken(ctx, cli.Keyring, increment)
+			tok, err := tm.Renew(prof, increment)
 			if err != nil {
 				return err
 			}
@@ -538,30 +569,31 @@ If no profile name is given, revokes the token for the current profile.`,
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 
-			var prof *profile.Profile
+			pm := profile.NewProfileManager(ctx, cli.Config)
+			var prof *types.Profile
+			var err error
 			if len(args) > 0 {
-				var err error
-				prof, err = profile.Get(cli.Config, args[0])
+				prof, err = pm.Get(args[0])
 				if err != nil {
 					return err
 				}
 			} else {
-				var err error
-				prof, err = profile.GetCurrent(cli.Config)
+				prof, err = pm.GetCurrent()
 				if err != nil {
 					return err
 				}
 			}
 
 			// Check if token exists
-			if !prof.HasToken(cli.Keyring) {
+			tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+			if !tm.HasToken(prof) {
 				fmt.Printf("No token stored for profile %q\n", prof.Name)
 				return nil
 			}
 
 			// Revoke token with Vault (unless skipped)
 			if !skipRevoke {
-				if err := prof.RevokeToken(ctx, cli.Keyring); err != nil {
+				if err := tm.Revoke(prof); err != nil {
 					fmt.Printf("Warning: failed to revoke token with Vault: %v\n", err)
 					fmt.Println("The token will be removed from the keyring anyway.")
 				} else {
@@ -570,7 +602,7 @@ If no profile name is given, revokes the token for the current profile.`,
 			}
 
 			// Remove from keyring
-			if err := prof.DeleteToken(cli.Keyring); err != nil {
+			if err := tm.Delete(prof); err != nil {
 				return fmt.Errorf("failed to remove token from keyring: %w", err)
 			}
 
@@ -586,9 +618,40 @@ If no profile name is given, revokes the token for the current profile.`,
 
 // ProfileStatusOutput represents profile status output for JSON.
 type ProfileStatusOutput struct {
-	Profile *profile.Status     `json:"profile,omitempty"`
-	Token   *token.Status       `json:"token,omitempty"`
-	Server  *vault.HealthStatus `json:"server,omitempty"`
+	Profile *ProfileStatusOutputProfileItem `json:"profile,omitempty"`
+	Server  *ProfileStatusOutputServerItem  `json:"server,omitempty"`
+	Token   *ProfileStatusOutputTokenItem   `json:"token,omitempty"`
+}
+
+// ProfileStatusOutputProfileItem represents a profile in status output.
+type ProfileStatusOutputProfileItem struct {
+	Name          string `json:"name"`
+	Address       string `json:"address"`
+	Type          string `json:"type"`
+	Namespace     string `json:"namespace,omitempty"`
+	Binary        string `json:"binary"`
+	BinaryPath    string `json:"binary_path,omitempty"`
+	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
+	CACert        string `json:"ca_cert,omitempty"`
+	CAPath        string `json:"ca_path,omitempty"`
+	ClientCert    string `json:"client_cert,omitempty"`
+	ClientKey     string `json:"client_key,omitempty"`
+	Active        bool   `json:"active"`
+}
+
+// ProfileStatusOutputServerItem represents server health status output for JSON.
+type ProfileStatusOutputServerItem struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// ProfileStatusOutputTokenItem represents token status output for JSON.
+type ProfileStatusOutputTokenItem struct {
+	Token     string    `json:"token"`
+	TTL       int       `json:"ttl"`
+	Renewable bool      `json:"renewable"`
+	Valid     bool      `json:"valid"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // newProfileStatusCmd creates the profile status command.
@@ -619,22 +682,24 @@ If no profile name is given, shows status for the current profile.`,
 				return err
 			}
 
-			var prof *profile.Profile
+			ctx := cmd.Context()
+			pm := profile.NewProfileManager(ctx, cli.Config)
+			var prof *types.Profile
 			if len(args) > 0 {
 				var err error
-				prof, err = profile.Get(cli.Config, args[0])
+				prof, err = pm.Get(args[0])
 				if err != nil {
 					return err
 				}
 			} else {
 				var err error
-				prof, err = profile.GetCurrent(cli.Config)
+				prof, err = pm.GetCurrent()
 				if err != nil {
 					return err
 				}
 			}
 
-			return cli.runProfileStatus(cmd.Context(), prof, format, showToken)
+			return cli.runProfileStatus(ctx, prof, format, showToken)
 		},
 	}
 
@@ -644,50 +709,91 @@ If no profile name is given, shows status for the current profile.`,
 }
 
 // runProfileStatus displays comprehensive status for a profile.
-func (cli *CLI) runProfileStatus(ctx context.Context, prof *profile.Profile, format OutputFormat, showToken bool) error {
+func (cli *CLI) runProfileStatus(ctx context.Context, prof *types.Profile, format OutputFormat, showToken bool) error {
 	output := NewOutputWriter(format)
 
 	// Initialize status output for JSON
 	status := &ProfileStatusOutput{}
 
-	// Get profile status
-	profileStatus, err := profile.GetStatus(cli.Config, prof.Name)
-	if err != nil {
-		return err
+	// Convert to output format
+	status.Profile = &ProfileStatusOutputProfileItem{
+		Name:          prof.Name,
+		Address:       prof.Address,
+		Type:          prof.Type,
+		Namespace:     prof.Namespace,
+		Binary:        prof.GetBinaryPath(),
+		BinaryPath:    prof.BinaryPath,
+		TLSSkipVerify: prof.TLSSkipVerify,
+		CACert:        prof.CACert,
+		CAPath:        prof.CAPath,
+		ClientCert:    prof.ClientCert,
+		ClientKey:     prof.ClientKey,
+		Active:        prof.Name == cli.Config.Current,
 	}
-	status.Profile = profileStatus
 
 	// Test server connectivity
-	serverStatus := vault.CheckHealth(ctx, prof.Connection)
-	status.Server = serverStatus
-
-	// Get token status
-	tokenStatus, storedToken, err := prof.GetTokenStatus(ctx, cli.Keyring)
-	if err != nil {
-		return err
-	}
-	status.Token = tokenStatus
-
-	// Get lookup data for display if token is valid (optional - we already have status)
-	var lookupData *token.VaultTokenLookupData
-	if tokenStatus.Valid && storedToken != "" {
-		// Try to get full lookup data, but don't fail if it doesn't work
-		if data, lookupErr := prof.LookupToken(ctx, cli.Keyring); lookupErr == nil {
-			lookupData = data
+	healthExecutor := vault.NewHealthExecutor()
+	serverStatus := healthExecutor.CheckHealth(ctx, prof)
+	if serverStatus != nil {
+		status.Server = &ProfileStatusOutputServerItem{
+			Status:  serverStatus.Status,
+			Message: serverStatus.Message,
 		}
 	}
 
+	// Get token status
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+	tok, err := tm.Lookup(prof)
+
+	// Get stored token string if we have a token (even if invalid)
+	storedToken := ""
+	var lookupErr error
+	if err == nil || !errors.Is(err, tokenstore.ErrTokenNotFound) {
+		// Token exists (may be invalid), try to get it for display
+		var tokenErr error
+		storedToken, tokenErr = tm.Get(prof)
+		if tokenErr != nil {
+			storedToken = ""
+		}
+		if err != nil {
+			lookupErr = err
+		}
+	}
+
+	// Create token output - use lookup result if available, otherwise use stored token if present
+	var tokenOutput *ProfileStatusOutputTokenItem
+	if tok != nil {
+		tokenOutput = &ProfileStatusOutputTokenItem{
+			Token:     tok.ClientToken,
+			TTL:       tok.LeaseDuration,
+			Renewable: tok.Renewable,
+			Valid:     true,
+			ExpiresAt: tok.ExpiresAt,
+		}
+	} else if storedToken != "" {
+		// We have a stored token but lookup failed (invalid/expired token)
+		tokenOutput = &ProfileStatusOutputTokenItem{
+			Token:     storedToken,
+			TTL:       0,
+			Renewable: false,
+			Valid:     false,
+		}
+	}
+	status.Token = tokenOutput
+
 	// Single unified output function
 	return output.Write(status, func() {
-		cli.printProfileStatusHeader(prof)
-		fmt.Println()
+		cli.printProfileStatusHeader(status.Profile)
 		cli.printServerConnectivity(status.Server)
-		cli.printTokenInformation(status.Token, storedToken, lookupData, showToken, prof.Connection)
+		cli.printTokenInformation(status.Token, err, lookupErr, storedToken, showToken)
 	})
 }
 
 // printProfileStatusHeader prints the profile configuration header.
-func (cli *CLI) printProfileStatusHeader(prof *profile.Profile) {
+func (cli *CLI) printProfileStatusHeader(prof *ProfileStatusOutputProfileItem) {
+	if prof == nil {
+		return
+	}
 	fmt.Println("Profile Configuration:")
 	fmt.Printf("  Name:            %s\n", prof.Name)
 	fmt.Printf("  Address:         %s\n", prof.Address)
@@ -695,7 +801,7 @@ func (cli *CLI) printProfileStatusHeader(prof *profile.Profile) {
 	if prof.BinaryPath != "" {
 		fmt.Printf("  Binary Path:    %s\n", prof.BinaryPath)
 	} else {
-		fmt.Printf("  Binary:          %s\n", prof.GetBinaryPath())
+		fmt.Printf("  Binary:          %s\n", prof.Binary)
 	}
 	if prof.Namespace != "" {
 		fmt.Printf("  Namespace:       %s\n", prof.Namespace)
@@ -715,13 +821,12 @@ func (cli *CLI) printProfileStatusHeader(prof *profile.Profile) {
 	if prof.ClientKey != "" {
 		fmt.Printf("  Client Key:      %s\n", prof.ClientKey)
 	}
-	if prof.Name == cli.Config.Current {
-		fmt.Printf("  Active:          yes\n")
-	}
+	fmt.Printf("  Active:          %t\n", prof.Active)
+	fmt.Println()
 }
 
 // printServerConnectivity prints server connectivity status.
-func (cli *CLI) printServerConnectivity(server *vault.HealthStatus) {
+func (cli *CLI) printServerConnectivity(server *ProfileStatusOutputServerItem) {
 	if server == nil {
 		return
 	}
@@ -745,10 +850,11 @@ func (cli *CLI) printServerConnectivity(server *vault.HealthStatus) {
 }
 
 // printTokenInformation prints token information.
-func (cli *CLI) printTokenInformation(tokenInfo *token.Status, storedToken string, lookupData *token.VaultTokenLookupData, showToken bool, conn *config.Connection) {
+func (cli *CLI) printTokenInformation(tok *ProfileStatusOutputTokenItem, err error, lookupErr error, storedToken string, showToken bool) {
 	fmt.Println("Token Information:")
 
-	if tokenInfo == nil || !tokenInfo.Stored {
+	// Check if token is not stored
+	if err != nil && errors.Is(err, tokenstore.ErrTokenNotFound) {
 		fmt.Printf("  Status:          not logged in\n")
 		fmt.Println()
 		fmt.Println("Run 'patrol login' to authenticate.")
@@ -759,49 +865,38 @@ func (cli *CLI) printTokenInformation(tokenInfo *token.Status, storedToken strin
 	if showToken {
 		fmt.Printf("  Token:           %s\n", storedToken)
 	} else {
-		fmt.Printf("  Token:           %s\n", utils.Mask(storedToken))
+		fmt.Printf("  Token:           %s\n", utils.MaskToken(storedToken))
 	}
 
 	// Print token details if available
-	if tokenInfo.Valid {
-		if tokenInfo.Accessor != "" {
-			fmt.Printf("  Accessor:        %s\n", tokenInfo.Accessor)
-		}
-		if tokenInfo.DisplayName != "" {
-			fmt.Printf("  Display Name:    %s\n", tokenInfo.DisplayName)
-		}
-		if tokenInfo.TTL > 0 {
-			ttl := time.Duration(tokenInfo.TTL) * time.Second
-			expiry := time.Now().Add(ttl)
-			fmt.Printf("  TTL:             %s (expires %s)\n", utils.FormatDuration(ttl), expiry.Format(time.RFC3339))
+	if tok != nil && err == nil {
+		if tok.TTL > 0 {
+			ttl := time.Duration(tok.TTL) * time.Second
+			if !tok.ExpiresAt.IsZero() {
+				fmt.Printf("  TTL:             %s (expires %s)\n", utils.FormatDuration(ttl), tok.ExpiresAt.Format(time.RFC3339))
+			} else {
+				fmt.Printf("  TTL:             %s\n", utils.FormatDuration(ttl))
+			}
 		} else {
 			fmt.Printf("  TTL:             ∞ (never expires)\n")
 		}
-		fmt.Printf("  Renewable:       %t\n", tokenInfo.Renewable)
-		if len(tokenInfo.Policies) > 0 {
-			fmt.Printf("  Policies:        %v\n", tokenInfo.Policies)
-		}
-		if tokenInfo.AuthPath != "" {
-			fmt.Printf("  Auth Path:       %s\n", tokenInfo.AuthPath)
-		}
-		if tokenInfo.EntityID != "" {
-			fmt.Printf("  Entity ID:       %s\n", tokenInfo.EntityID)
-		}
-		fmt.Printf("  Status:          valid\n")
+		fmt.Printf("  Renewable:       %t\n", tok.Renewable)
+		fmt.Printf("  Valid:           %t\n", tok.Valid)
 		fmt.Println()
 
 		// Renewal recommendation
 		const TokenExpiryWarningSeconds = 300 // 5 minutes
-		if tokenInfo.TTL > 0 && tokenInfo.TTL < TokenExpiryWarningSeconds && tokenInfo.Renewable {
+		if tok.TTL > 0 && tok.TTL < TokenExpiryWarningSeconds && tok.Renewable {
 			fmt.Println("Warning: Token will expire soon. Consider running 'patrol daemon' for auto-renewal.")
 		}
-	} else if tokenInfo.Error != "" {
+	} else if lookupErr != nil {
 		// Token stored but has an error
-		if strings.Contains(tokenInfo.Error, "binary not found") {
-			fmt.Printf("  Status:          stored (cannot verify - %s)\n", tokenInfo.Error)
+		errorMsg := lookupErr.Error()
+		if strings.Contains(errorMsg, "binary not found") {
+			fmt.Printf("  Status:          stored (cannot verify - %s)\n", errorMsg)
 		} else {
 			fmt.Printf("  Status:          invalid or expired\n")
-			fmt.Printf("  Error:           %s\n", tokenInfo.Error)
+			fmt.Printf("  Error:           %s\n", errorMsg)
 			fmt.Println()
 			fmt.Println("Your stored token may have expired. Run 'patrol login' to re-authenticate.")
 		}

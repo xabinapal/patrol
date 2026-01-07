@@ -8,21 +8,22 @@ import (
 
 	"github.com/xabinapal/patrol/internal/config"
 	"github.com/xabinapal/patrol/internal/proxy"
+	"github.com/xabinapal/patrol/internal/token"
 	"github.com/xabinapal/patrol/internal/utils"
+	"github.com/xabinapal/patrol/internal/vault"
 )
 
 // patrolCommands is the single source of truth for all built-in Patrol commands.
 // This prevents bugs where new commands are added to addCommands() but not here.
 var patrolCommands = map[string]bool{
 	// Core commands
-	"login": true, "logout": true, "daemon": true,
-	// Profile management
-	"profile": true,
+	"profile": true, "daemon": true,
+	"login": true, "logout": true,
 	// Token helper commands (used by Vault)
 	"get": true, "store": true, "erase": true,
 	// Additional commands
-	"config": true, "doctor": true,
-	"help": true, "version": true, "completion": true,
+	"config": true, "version": true,
+	"help": true, "completion": true,
 }
 
 // ShouldProxy checks if the command should be proxied to vault/bao.
@@ -104,11 +105,13 @@ func (cli *CLI) proxyCommand(ctx context.Context, args []string) error {
 	}
 
 	// Get the stored token (optional - token is not required for proxy)
-	token, _ := prof.GetToken(cli.Keyring) //nolint:errcheck // token is optional
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+	tokenStr, _ := tm.Get(prof) //nolint:errcheck // token is optional
 
 	// Create the executor
-	exec := proxy.NewExecutor(prof.Connection,
-		proxy.WithToken(token),
+	conn := prof.ToConnection()
+	exec := proxy.NewExecutor(conn,
+		proxy.WithToken(tokenStr),
 		proxy.WithStdin(os.Stdin),
 		proxy.WithStdout(os.Stdout),
 		proxy.WithStderr(os.Stderr),

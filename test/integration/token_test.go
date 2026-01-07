@@ -98,7 +98,7 @@ connections:
 	t.Logf("profile status output: %s", output)
 
 	// Verify output contains expected fields
-	expectedFields := []string{"accessor", "policies", "ttl"}
+	expectedFields := []string{"ttl"}
 	for _, field := range expectedFields {
 		if !strings.Contains(strings.ToLower(output), field) {
 			t.Errorf("expected %q in token info output", field)

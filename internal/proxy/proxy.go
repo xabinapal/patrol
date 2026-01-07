@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -275,7 +276,7 @@ func (e *Executor) buildEnvironment() []string {
 
 	// Add any custom environment variables (using SetEnv to properly override)
 	for _, kv := range e.environ {
-		if idx := utils.IndexOf(kv, '='); idx > 0 {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
 			key := kv[:idx]
 			value := kv[idx+1:]
 			env = utils.SetEnv(env, key, value)

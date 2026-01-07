@@ -8,6 +8,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xabinapal/patrol/internal/profile"
+	"github.com/xabinapal/patrol/internal/token"
+	"github.com/xabinapal/patrol/internal/types"
+	"github.com/xabinapal/patrol/internal/vault"
 )
 
 // newLogoutCmd creates the logout command.
@@ -61,31 +64,34 @@ Examples:
 
 // runLogout handles logging out from a single profile.
 func (cli *CLI) runLogout(ctx context.Context, profileName string, revoke bool) error {
-	var prof *profile.Profile
+	var prof *types.Profile
 	var err error
 
+	pm := profile.NewProfileManager(ctx, cli.Config)
 	if profileName == "" {
-		prof, err = profile.GetCurrent(cli.Config)
+		prof, err = pm.GetCurrent()
 		if err != nil {
 			return err
 		}
 		profileName = prof.Name
 	} else {
-		prof, err = profile.Get(cli.Config, profileName)
+		prof, err = pm.Get(profileName)
 		if err != nil {
 			return err
 		}
 	}
 
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+
 	// Check if token exists
-	if !prof.HasToken(cli.Keyring) {
+	if !tm.HasToken(prof) {
 		fmt.Printf("No token stored for profile %q\n", profileName)
 		return nil
 	}
 
 	// Revoke the token if requested
 	if revoke && cli.Config.RevokeOnLogout {
-		if err := prof.RevokeToken(ctx, cli.Keyring); err != nil {
+		if err := tm.Revoke(prof); err != nil {
 			// Log the error but continue with local removal
 			if cli.verboseFlag {
 				fmt.Fprintf(os.Stderr, "Warning: failed to revoke token: %v\n", err)
@@ -98,7 +104,7 @@ func (cli *CLI) runLogout(ctx context.Context, profileName string, revoke bool) 
 	}
 
 	// Delete the token from keyring
-	if err := prof.DeleteToken(cli.Keyring); err != nil {
+	if err := tm.Delete(prof); err != nil {
 		return fmt.Errorf("failed to remove token: %w", err)
 	}
 
@@ -120,17 +126,19 @@ func (cli *CLI) runLogoutAll(ctx context.Context, revoke bool) error {
 	var loggedOut int
 	var errs []error
 
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+
 	for _, conn := range cli.Config.Connections {
-		prof := &profile.Profile{Connection: &conn}
+		prof := types.FromConnection(&conn)
 
 		// Check if token exists
-		if !prof.HasToken(cli.Keyring) {
+		if !tm.HasToken(prof) {
 			continue // No token for this profile
 		}
 
 		// Revoke if requested
 		if revoke && cli.Config.RevokeOnLogout {
-			if err := prof.RevokeToken(ctx, cli.Keyring); err != nil {
+			if err := tm.Revoke(prof); err != nil {
 				if cli.verboseFlag {
 					fmt.Fprintf(os.Stderr, "Warning: failed to revoke token for %s: %v\n", conn.Name, err)
 				}
@@ -138,7 +146,7 @@ func (cli *CLI) runLogoutAll(ctx context.Context, revoke bool) error {
 		}
 
 		// Delete from keyring
-		if err := prof.DeleteToken(cli.Keyring); err != nil {
+		if err := tm.Delete(prof); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", conn.Name, err))
 			continue
 		}

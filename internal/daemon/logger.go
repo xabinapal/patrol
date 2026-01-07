@@ -126,13 +126,13 @@ func (l *Logger) Close() error {
 
 // logEntry represents a JSON log entry.
 type logEntry struct {
-	Time    string      `json:"time"`
-	Level   string      `json:"level"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
-func (l *Logger) log(level LogLevel, msg string, data interface{}) {
+func (l *Logger) log(level LogLevel, msg string, data any) {
 	if level < l.level {
 		return
 	}
@@ -231,8 +231,8 @@ func (l *Logger) cleanupOldLogs() {
 }
 
 // Debug logs a debug message.
-func (l *Logger) Debug(msg string, data ...interface{}) {
-	var d interface{}
+func (l *Logger) Debug(msg string, data ...any) {
+	var d any
 	if len(data) > 0 {
 		d = data[0]
 	}
@@ -240,8 +240,8 @@ func (l *Logger) Debug(msg string, data ...interface{}) {
 }
 
 // Info logs an info message.
-func (l *Logger) Info(msg string, data ...interface{}) {
-	var d interface{}
+func (l *Logger) Info(msg string, data ...any) {
+	var d any
 	if len(data) > 0 {
 		d = data[0]
 	}
@@ -249,8 +249,8 @@ func (l *Logger) Info(msg string, data ...interface{}) {
 }
 
 // Warn logs a warning message.
-func (l *Logger) Warn(msg string, data ...interface{}) {
-	var d interface{}
+func (l *Logger) Warn(msg string, data ...any) {
+	var d any
 	if len(data) > 0 {
 		d = data[0]
 	}
@@ -258,8 +258,8 @@ func (l *Logger) Warn(msg string, data ...interface{}) {
 }
 
 // Error logs an error message.
-func (l *Logger) Error(msg string, data ...interface{}) {
-	var d interface{}
+func (l *Logger) Error(msg string, data ...any) {
+	var d any
 	if len(data) > 0 {
 		d = data[0]
 	}
@@ -267,12 +267,12 @@ func (l *Logger) Error(msg string, data ...interface{}) {
 }
 
 // Println logs an info message (for compatibility with standard log.Logger).
-func (l *Logger) Println(v ...interface{}) {
+func (l *Logger) Println(v ...any) {
 	l.Info(fmt.Sprint(v...))
 }
 
 // Printf logs an info message with formatting (for compatibility with standard log.Logger).
-func (l *Logger) Printf(format string, v ...interface{}) {
+func (l *Logger) Printf(format string, v ...any) {
 	l.Info(fmt.Sprintf(format, v...))
 }
 

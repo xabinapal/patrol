@@ -3,8 +3,6 @@ package cli
 import (
 	"reflect"
 	"testing"
-
-	"github.com/xabinapal/patrol/internal/utils"
 )
 
 func TestBuildLoginArgs(t *testing.T) {
@@ -274,69 +272,6 @@ func TestParseLoginFlags(t *testing.T) {
 			}
 			if !reflect.DeepEqual(remain, tt.expectedRemain) {
 				t.Errorf("parseLoginFlags() remain = %v, want %v", remain, tt.expectedRemain)
-			}
-		})
-	}
-}
-
-func TestExtractTokenFromOutput(t *testing.T) {
-	tests := []struct {
-		name     string
-		output   string
-		expected string
-	}{
-		{
-			name:     "token only",
-			output:   "root-token",
-			expected: "root-token",
-		},
-		{
-			name:     "token with newline",
-			output:   "root-token\n",
-			expected: "root-token",
-		},
-		{
-			name:     "token with prompt interleaved",
-			output:   "Token (will be hidden): \nroot-token",
-			expected: "root-token",
-		},
-		{
-			name:     "token on last line with multiple lines",
-			output:   "Token (will be hidden): \nroot-token\n",
-			expected: "root-token",
-		},
-		{
-			name:     "token with stderr prompt",
-			output:   "Token (will be hidden): \nsome-warning\nroot-token",
-			expected: "root-token",
-		},
-		{
-			name:     "token with carriage return",
-			output:   "Token (will be hidden): \r\nroot-token\r\n",
-			expected: "root-token",
-		},
-		{
-			name:     "empty output",
-			output:   "",
-			expected: "",
-		},
-		{
-			name:     "only whitespace",
-			output:   "   \n  \n  ",
-			expected: "",
-		},
-		{
-			name:     "token with leading/trailing spaces",
-			output:   "  root-token  \n",
-			expected: "root-token",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := utils.ExtractTokenFromOutput(tt.output)
-			if result != tt.expected {
-				t.Errorf("ExtractTokenFromOutput(%q) = %q, want %q", tt.output, result, tt.expected)
 			}
 		})
 	}

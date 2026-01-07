@@ -12,7 +12,8 @@ import (
 
 	"github.com/xabinapal/patrol/internal/profile"
 	"github.com/xabinapal/patrol/internal/proxy"
-	"github.com/xabinapal/patrol/internal/utils"
+	"github.com/xabinapal/patrol/internal/token"
+	"github.com/xabinapal/patrol/internal/vault"
 )
 
 // newLoginCmd creates the login command.
@@ -127,22 +128,24 @@ func parseLoginFlags(args []string, currentMethod, currentPath string) (method, 
 
 // runLogin handles the login command execution.
 func (cli *CLI) runLogin(ctx context.Context, args []string) error {
-	if err := cli.Keyring.IsAvailable(); err != nil {
+	if err := cli.Store.IsAvailable(); err != nil {
 		return fmt.Errorf("cannot store token: %w", err)
 	}
 
-	prof, err := profile.GetCurrent(cli.Config)
+	pm := profile.NewProfileManager(ctx, cli.Config)
+	prof, err := pm.GetCurrent()
 	if err != nil {
 		return err
 	}
 
-	if !proxy.BinaryExists(prof.Connection) {
+	conn := prof.ToConnection()
+	if !proxy.BinaryExists(conn) {
 		return fmt.Errorf("vault/openbao binary %q not found in PATH", prof.GetBinaryPath())
 	}
 
 	loginArgs := buildVaultLoginArgs(args)
 
-	exec := proxy.NewExecutor(prof.Connection,
+	exec := proxy.NewExecutor(conn,
 		proxy.WithStdout(os.Stdout),
 		proxy.WithStderr(os.Stderr),
 	)
@@ -157,12 +160,18 @@ func (cli *CLI) runLogin(ctx context.Context, args []string) error {
 		os.Exit(exitCode)
 	}
 
-	tokenStr := utils.ExtractTokenFromOutput(captureBuf.String())
+	tokenStr := ""
+	for tokenLine := range strings.Lines(captureBuf.String()) {
+		tokenStr = tokenLine
+	}
+	tokenStr = strings.TrimSpace(tokenStr)
+
 	if tokenStr == "" {
 		return errors.New("login succeeded but no token was returned")
 	}
 
-	if err := prof.SetToken(cli.Keyring, tokenStr); err != nil {
+	tm := token.NewTokenManager(ctx, cli.Store, vault.NewTokenExecutor())
+	if err := tm.Set(prof, tokenStr); err != nil {
 		return fmt.Errorf("failed to store token securely: %w", err)
 	}
 
